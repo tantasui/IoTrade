@@ -117,7 +117,8 @@ router.post('/feeds/:feedId/update',
         return feed?.isPremium || false;
       })() : false;
 
-      const blobId = await walrusService.uploadData(enrichedData, encrypt);
+      // Pass feedId for Seal encryption if premium
+      const blobId = await walrusService.uploadData(enrichedData, encrypt, feedId);
 
       // Log to data history
       await prisma.dataHistory.create({

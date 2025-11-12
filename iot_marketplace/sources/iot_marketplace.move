@@ -1,7 +1,15 @@
 module iot_marketplace::data_marketplace {
     use sui::event;
     use std::string::{Self, String};
+    
 
+
+    // =================== Errors ===================
+
+    const ENotProvider: u64 = 1;
+    const EFeedInactive: u64 = 2;
+    const EInvalidPrice: u64 = 3;
+   
     // =================== Structs ===================
 
     /// Represents a data feed from an IoT device
@@ -71,12 +79,7 @@ module iot_marketplace::data_marketplace {
         new_provider: address,
     }
 
-    // =================== Errors ===================
-
-    const ENotProvider: u64 = 1;
-    const EFeedInactive: u64 = 2;
-    const EInvalidPrice: u64 = 3;
-    const EInvalidFeePercentage: u64 = 4;
+    
 
     // =================== Initialization ===================
 

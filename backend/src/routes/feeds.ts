@@ -131,8 +131,9 @@ router.put('/:id/data', async (req: Request, res: Response) => {
     }
 
     // Upload new data to Walrus (still needed)
+    // Pass feedId for Seal encryption if premium
     const encrypt = feed.isPremium;
-    const newWalrusBlobId = await walrusService.uploadData(data, encrypt);
+    const newWalrusBlobId = await walrusService.uploadData(data, encrypt, id);
 
     // Return Walrus blob ID - frontend will update blockchain
     res.json({

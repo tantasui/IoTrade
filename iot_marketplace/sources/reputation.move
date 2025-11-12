@@ -1,9 +1,6 @@
 module iot_marketplace::reputation {
     use sui::event;
     use std::string::{Self, String};
-    use sui::object::{Self, UID, ID};
-    use sui::tx_context::{Self, TxContext};
-    use sui::transfer;
 
     // =================== Structs ===================
 
@@ -154,7 +151,7 @@ module iot_marketplace::reputation {
     /// Vote a rating as helpful
     public entry fun vote_helpful(
         rating: &mut Rating,
-        ctx: &mut TxContext
+        _ctx: &mut TxContext
     ) {
         rating.helpfulness_votes = rating.helpfulness_votes + 1;
     }

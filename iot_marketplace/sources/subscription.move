@@ -3,9 +3,6 @@ module iot_marketplace::subscription {
     use sui::coin::{Self, Coin};
     use sui::sui::SUI;
     use sui::balance::{Self, Balance};
-    use sui::object::{Self, UID, ID};
-    use sui::tx_context::{Self, TxContext};
-    use sui::transfer;
     use std::string::String;
     use iot_marketplace::data_marketplace::{Self, DataFeed, DataFeedRegistry};
 
@@ -296,7 +293,7 @@ module iot_marketplace::subscription {
         });
         
         // Transfer ownership to new consumer
-        transfer::transfer(subscription, new_consumer);
+        transfer::public_transfer(subscription, new_consumer);
     }
 
     /// Check if user has access to a feed

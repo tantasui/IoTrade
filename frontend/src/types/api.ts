@@ -47,7 +47,11 @@ export type UpdateFeedDataResponse = ApiSuccess<{ feedId: string; newWalrusBlobI
 export type SubscribeResponse = ApiSuccess<{ subscriptionId: string; feedId: string; tier: number; paymentAmount: number }> | ApiError;
 export type SubscriptionResponse = ApiSuccess<Subscription> | ApiError;
 export type VerifyAccessResponse = ApiSuccess<{ hasAccess: boolean; subscriptionId: string }> | ApiError;
-export type DataResponse = ApiSuccess<any> & { feed?: { id: string; name: string; category: string; lastUpdated: number } } | ApiError;
+export type DataResponse = ApiSuccess<any> & { 
+  feed?: { id: string; name: string; category: string; lastUpdated: number };
+  encrypted?: boolean;
+  encryptionType?: 'seal' | 'aes';
+} | ApiError;
 export type DataHistoryResponse = ApiSuccess<Array<{ timestamp: number; data: any }>> & { count: number } | ApiError;
 export interface ApiKey {
   id: string;

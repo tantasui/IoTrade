@@ -2,6 +2,7 @@ import axios from 'axios';
 import crypto from 'crypto-js';
 import dotenv from 'dotenv';
 import { WalrusUploadResponse, SealEncryptionResult } from '../types';
+import sealService from './seal.service';
 
 // Ensure environment variables from .env are loaded before using process.env
 dotenv.config();
@@ -25,36 +26,71 @@ export class WalrusService {
 
   /**
    * Upload data to Walrus storage
+   * @param data - Data to upload
+   * @param encrypt - Whether to encrypt (for premium feeds, uses Seal)
+   * @param feedId - Feed ID (required if encrypt is true, for Seal identity)
    */
-  async uploadData(data: any, encrypt: boolean = false): Promise<string> {
+  async uploadData(data: any, encrypt: boolean = false, feedId?: string): Promise<string> {
     try {
-      let dataToUpload = data;
+      let dataToUpload: string | Uint8Array;
 
       // Convert data to string if it's an object
       if (typeof data === 'object') {
         dataToUpload = JSON.stringify(data);
+      } else {
+        dataToUpload = data;
       }
 
       // Encrypt data if requested
       if (encrypt) {
-        const encryptionKey = this.generateEncryptionKey();
-        dataToUpload = this.encryptWithKey(dataToUpload, encryptionKey);
-        // Store encryption key separately (in production, use proper key management)
-        dataToUpload = JSON.stringify({
-          encrypted: true,
-          data: dataToUpload,
-          keyHint: encryptionKey.substring(0, 8) // Store hint for testing
-        });
+        // Use Seal encryption for premium feeds
+        if (sealService.isConfigured() && feedId) {
+          try {
+            const { encryptedBytes } = await sealService.encryptData(dataToUpload, feedId);
+            // Store encrypted bytes directly (not JSON)
+            dataToUpload = encryptedBytes;
+            console.log('[WalrusService] Data encrypted with Seal', { feedId, size: encryptedBytes.length });
+          } catch (sealError: any) {
+            console.warn('[WalrusService] Seal encryption failed, falling back to AES:', sealError.message);
+            // Fallback to AES encryption if Seal fails
+            const encryptionKey = this.generateEncryptionKey();
+            const encryptedString = this.encryptWithKey(typeof dataToUpload === 'string' ? dataToUpload : JSON.stringify(dataToUpload), encryptionKey);
+            dataToUpload = JSON.stringify({
+              encrypted: true,
+              encryptionType: 'aes',
+              data: encryptedString,
+              keyHint: encryptionKey.substring(0, 8) // Store hint for testing
+            });
+          }
+        } else {
+          // Fallback to AES encryption if Seal not configured
+          console.warn('[WalrusService] Seal not configured, using AES encryption');
+          const encryptionKey = this.generateEncryptionKey();
+          const encryptedString = this.encryptWithKey(typeof dataToUpload === 'string' ? dataToUpload : JSON.stringify(dataToUpload), encryptionKey);
+          dataToUpload = JSON.stringify({
+            encrypted: true,
+            encryptionType: 'aes',
+            data: encryptedString,
+            keyHint: encryptionKey.substring(0, 8) // Store hint for testing
+          });
+        }
       }
 
       // Upload to Walrus (use current HTTP API path)
       const uploadUrl = `${this.publisherUrl}/v1/blobs?epochs=${this.epochs}`;
-      const contentLength = typeof dataToUpload === 'string' ? Buffer.byteLength(dataToUpload, 'utf8') : 0;
+      const contentLength = typeof dataToUpload === 'string' 
+        ? Buffer.byteLength(dataToUpload, 'utf8') 
+        : dataToUpload.length;
       console.log('[WalrusService] Upload start', { uploadUrl, epochs: this.epochs, encrypt, contentLength });
+
+      // Convert Uint8Array to Buffer if needed
+      const uploadData = typeof dataToUpload === 'string' 
+        ? dataToUpload 
+        : Buffer.from(dataToUpload);
 
       const response = await axios.put(
         uploadUrl,
-        dataToUpload,
+        uploadData,
         {
           headers: {
             'Content-Type': 'application/octet-stream',
@@ -103,20 +139,39 @@ export class WalrusService {
 
   /**
    * Retrieve data from Walrus storage
+   * @param blobId - Blob ID to retrieve
+   * @param decryptionKey - Optional decryption key (for AES fallback)
+   * @param feedId - Optional feed ID (for Seal-encrypted data)
+   * @returns Data (encrypted bytes for Seal, decrypted JSON for AES or plain data)
    */
-  async retrieveData(blobId: string, decryptionKey?: string): Promise<any> {
+  async retrieveData(blobId: string, decryptionKey?: string, feedId?: string): Promise<any> {
     try {
       const url = `${this.aggregatorUrl}/v1/blobs/${blobId}`;
-      console.log('[WalrusService] Retrieve start', { url });
-      const response = await axios.get(url, { responseType: 'text' });
+      console.log('[WalrusService] Retrieve start', { url, feedId });
+      
+      // For Seal-encrypted data, we need to return bytes
+      const response = await axios.get(url, { 
+        responseType: feedId && sealService.isConfigured() ? 'arraybuffer' : 'text' 
+      });
 
-      let data = response.data;
+      // If it's Seal-encrypted, return as Uint8Array for frontend decryption
+      if (feedId && sealService.isConfigured() && response.data instanceof ArrayBuffer) {
+        return new Uint8Array(response.data);
+      }
+
+      let data = typeof response.data === 'string' ? response.data : response.data.toString();
 
       // Try to parse as JSON
       try {
         const parsed = JSON.parse(data);
 
-        // Check if data is encrypted
+        // Check if data is encrypted with AES (fallback)
+        if (parsed.encrypted && parsed.encryptionType === 'aes' && decryptionKey) {
+          const decrypted = this.decryptWithKey(parsed.data, decryptionKey);
+          return JSON.parse(decrypted);
+        }
+
+        // Check if data is encrypted with old format (backward compatibility)
         if (parsed.encrypted && decryptionKey) {
           const decrypted = this.decryptWithKey(parsed.data, decryptionKey);
           return JSON.parse(decrypted);
