@@ -160,7 +160,6 @@ export default function Layout({ children }: LayoutProps) {
               <ul className="space-y-2 text-sm text-[#333333]">
                 <li>• Sui Blockchain</li>
                 <li>• Walrus Storage</li>
-                <li>• Seal Encryption</li>
               </ul>
             </div>
           </div>
