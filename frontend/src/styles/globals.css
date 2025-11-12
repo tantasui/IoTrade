@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 45, 45, 45;
+  --background-rgb: 255, 255, 255;
+}
+
+@layer base {
+  html {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+    background: rgb(var(--background-rgb));
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-optical-sizing: auto;
+    font-style: normal;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-[#56c214] hover:bg-[#4aa50f] text-white font-medium py-3 px-6 rounded-[4px] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  .btn-secondary {
+    @apply bg-[#f5f5f5] hover:bg-[#e8e8e8] text-[#2d2d2d] font-medium py-3 px-6 rounded-[4px] border border-[#e0e0e0] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  
+  .btn-danger {
+    @apply bg-[#e90d1] hover:bg-[#c70b0b] text-white font-medium py-2 px-4 rounded-[4px] transition-colors duration-200;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  .card {
+    @apply bg-white text-[#2d2d2d] rounded-[8px] p-4 border border-[#e0e0e0];
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+  
+  .modal {
+    @apply bg-white rounded-[8px] border border-[#e0e0e0] max-h-[90vh] overflow-y-auto;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+  
+  .modal-backdrop {
+    @apply fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50;
+  }
+
+  .input {
+    @apply w-full px-4 py-2 border border-[#e0e0e0] rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#56c214] focus:border-transparent bg-white text-[#2d2d2d] placeholder-gray-500;
+  }
+  
+  .input:disabled {
+    @apply bg-[#f5f5f5] text-gray-500 cursor-not-allowed;
+  }
+
+  .badge {
+    @apply inline-block px-3 py-1 text-sm font-semibold rounded-[4px];
+  }
+
+  .badge-premium {
+    @apply badge bg-[#e90d1] text-white;
+  }
+
+  .badge-free {
+    @apply badge bg-[#56c214] text-white;
+  }
+
+  .badge-active {
+    @apply badge bg-[#56c214] text-white;
+  }
+}

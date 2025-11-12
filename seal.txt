@@ -1,0 +1,664 @@
+Getting Started¶
+Note
+
+This guide is meant to help you quickly bootstrap with Seal. Before deploying your app to production or Mainnet, please review the full Seal documentation to understand the design, security best practices, and operational requirements.
+
+Bootstrap your app¶
+Seal makes it simple to add decentralized encryption and programmable access control to your Web3 applications. Follow these steps to get started:
+
+1. Install the Seal SDK
+
+Seal provides a TypeScript SDK for easy integration. Install it from npm:
+
+
+$ npm install @mysten/seal
+Reference: SDK on NPM
+
+2. Choose key servers in Testnet
+
+Seal relies on a committee of key servers to generate threshold-based decryption keys.
+
+Use verified key servers for Testnet.
+For permissioned servers, contact the provider to allowlist your access policy package ID (see below).
+3. Define your access policy
+
+Access policies are written as Move modules on Sui. Examples include:
+
+Token-gated access
+Subscription-based access
+Time-locked decryption
+Allowlist-based access
+See Example patterns to help you get started.
+
+4. Encrypt your data
+
+Use the SDK to encrypt data before storing it:
+
+
+const { encryptedObject: encryptedBytes, key: backupKey } = await client.encrypt({
+    threshold: 2,
+    packageId: fromHEX(packageId),
+    id: fromHEX(id),
+    data,
+});
+Learn more in Encryption Guide.
+
+5. Store encrypted data
+
+Store your encrypted content in Walrus (using HTTP API or one of the SDKs), Sui (as Objects), or any storage of your choice.
+
+6. Decrypt data with access control
+
+When a user requests access, Seal checks your onchain policy. If approved, decryption keys are provided to meet the threshold.
+
+
+// Create the Transaction for evaluating the seal_approve function.
+const tx = new Transaction();
+tx.moveCall({
+    target: `${packageId}::${moduleName}::seal_approve`, 
+    arguments: [
+        tx.pure.vector("u8", fromHEX(id)),
+        // other arguments
+   ]
+ });  
+const txBytes = tx.build( { client: suiClient, onlyTransactionKind: true })
+const decryptedBytes = await client.decrypt({
+    data: encryptedBytes,
+    sessionKey,
+    txBytes,
+});
+Learn more in Decryption Guide.
+
+Subscription¶
+Move source
+
+Use this pattern to offer time-limited access to encrypted content or services. You define a service with a price and duration; when someone subscribes, their identity gets a pass that lets them decrypt the service’s content until it expires. There's no need to re-encrypt or move data. Ideal for premium media, data feeds, or paid API / AI model access.
+
+// Copyright (c), Mysten Labs, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+/// Subscription pattern:
+/// - Anyone can create a service that requires a subscription.
+/// - Anyone can buy a subscription to the service for a certain period.
+/// - Anyone with an active subscription can access its service related keys.
+///
+/// Use cases that can be built on top of this: subscription based access to content.
+///
+/// This pattern implements global versioning per package.
+///
+module patterns::subscription;
+
+use sui::{clock::Clock, coin::Coin, sui::SUI};
+
+const EInvalidFee: u64 = 12;
+const ENoAccess: u64 = 77;
+const EWrongVersion: u64 = 5;
+
+const VERSION: u64 = 1;
+
+// Manage the version of the package for which seal_approve functions should be evaluated with.
+public struct PackageVersion has key {
+    id: UID,
+    version: u64,
+}
+
+public struct PackageVersionCap has key {
+    id: UID,
+}
+
+// PackageVersionCap can also be used to upgrade the version of PackageVersion in future versions,
+// see https://docs.sui.io/concepts/sui-move-concepts/packages/upgrade#versioned-shared-objects
+
+fun init(ctx: &mut TxContext) {
+    transfer::share_object(PackageVersion {
+        id: object::new(ctx),
+        version: VERSION,
+    });
+    transfer::transfer(PackageVersionCap { id: object::new(ctx) }, ctx.sender());
+}
+
+public struct Service has key {
+    id: UID,
+    fee: u64,
+    ttl: u64,
+    owner: address,
+}
+
+/// Subscription can only be transferred to another address (but not stored / shared / received, etc).
+public struct Subscription has key {
+    id: UID,
+    service_id: ID,
+    created_at: u64,
+}
+
+//////////////////////////////////////////
+/////// Simple a service
+
+/// Create a service.
+/// The associated key-ids are [pkg id][service id][nonce] for any nonce (thus
+/// many key-ids can be created for the same service).
+public fun create_service(fee: u64, ttl: u64, ctx: &mut TxContext): Service {
+    Service {
+        id: object::new(ctx),
+        fee: fee,
+        ttl: ttl,
+        owner: ctx.sender(),
+    }
+}
+
+// convenience function to create a service and share it (simpler ptb for cli)
+entry fun create_service_entry(fee: u64, ttl: u64, ctx: &mut TxContext) {
+    transfer::share_object(create_service(fee, ttl, ctx));
+}
+
+public fun subscribe(
+    fee: Coin<SUI>,
+    service: &Service,
+    c: &Clock,
+    ctx: &mut TxContext,
+): Subscription {
+    assert!(fee.value() == service.fee, EInvalidFee);
+    transfer::public_transfer(fee, service.owner);
+    Subscription {
+        id: object::new(ctx),
+        service_id: object::id(service),
+        created_at: c.timestamp_ms(),
+    }
+}
+
+public fun transfer(sub: Subscription, to: address) {
+    transfer::transfer(sub, to);
+}
+
+#[test_only]
+public fun destroy_for_testing(ser: Service, sub: Subscription) {
+    let Service { id, .. } = ser;
+    object::delete(id);
+    let Subscription { id, .. } = sub;
+    object::delete(id);
+}
+
+#[test_only]
+public fun create_for_testing(ctx: &mut TxContext): (PackageVersion, PackageVersionCap) {
+    let pkg_version = PackageVersion {
+        id: object::new(ctx),
+        version: VERSION,
+    };
+    (pkg_version, PackageVersionCap { id: object::new(ctx) })
+}
+
+#[test_only]
+public fun destroy_versions_for_testing(
+    pkg_version: PackageVersion,
+    pkg_version_cap: PackageVersionCap,
+) {
+    let PackageVersion { id, .. } = pkg_version;
+    object::delete(id);
+    let PackageVersionCap { id, .. } = pkg_version_cap;
+    object::delete(id);
+}
+
+//////////////////////////////////////////////////////////
+/// Access control
+/// key format: [pkg id][service id][random nonce]
+
+/// All addresses can access all IDs with the prefix of the service
+fun check_policy(
+    id: vector<u8>,
+    pkg_version: &PackageVersion,
+    sub: &Subscription,
+    service: &Service,
+    c: &Clock,
+): bool {
+    // Check we are using the right version of the package.
+    assert!(pkg_version.version == VERSION, EWrongVersion);
+
+    if (object::id(service) != sub.service_id) {
+        return false
+    };
+    if (c.timestamp_ms() > sub.created_at + service.ttl) {
+        return false
+    };
+
+    // Check if the id has the right prefix
+    let namespace = service.id.to_bytes();
+    let mut i = 0;
+    if (namespace.length() > id.length()) {
+        return false
+    };
+    while (i < namespace.length()) {
+        if (namespace[i] != id[i]) {
+            return false
+        };
+        i = i + 1;
+    };
+    true
+}
+
+entry fun seal_approve(
+    id: vector<u8>,
+    pkg_version: &PackageVersion,
+    sub: &Subscription,
+    service: &Service,
+    c: &Clock,
+) {
+    assert!(check_policy(id, pkg_version, sub, service, c), ENoAccess);
+}
+
+#[test]
+fun test_approve() {
+    use sui::clock;
+    use sui::coin;
+
+    let ctx = &mut tx_context::dummy();
+    let mut c = clock::create_for_testing(ctx); // time = 0
+    let coin = coin::mint_for_testing<SUI>(10, ctx);
+    let (pkg_version, _pkg_version_cap) = create_for_testing(ctx);
+
+    let ser = create_service(10, 2, ctx);
+    let sub = subscribe(coin, &ser, &c, ctx);
+
+    let mut obj_id = object::id(&ser).to_bytes();
+    obj_id.push_back(11);
+
+    // Work for time 0
+    assert!(check_policy(obj_id, &pkg_version, &sub, &ser, &c));
+    c.increment_for_testing(1);
+    assert!(check_policy(obj_id, &pkg_version, &sub, &ser, &c));
+    // time 3 should fail
+    c.increment_for_testing(2);
+    assert!(!check_policy(obj_id, &pkg_version, &sub, &ser, &c));
+
+    destroy_for_testing(ser, sub);
+    destroy_versions_for_testing(pkg_version, _pkg_version_cap);
+    c.destroy_for_testing();
+}
+
+Using Seal¶
+Use this guide to learn how to protect your app and user data with Seal.
+
+Tip
+
+Read the Seal Design document first to understand the underlying architecture and concepts before using this guide.
+
+Access control management¶
+Packages should define seal_approve* functions in their modules to control access to the keys associated with their identity namespace. Guidelines for defining seal_approve* functions:
+
+A package can include multiple seal_approve* functions, each implementing different access control logic and accepting different input parameters.
+The first parameter must be the requested identity, excluding the package ID prefix. For example: id: vector<u8>.
+If access is not granted, the function should abort without returning a value.
+To support future upgrades and maintain backward compatibility, define seal_approve* functions as non-public entry functions when possible, and either version your shared objects or use a versioned shared global object with the latest version (see allowlist and subscription examples).
+See Example patterns for additional examples and high-level patterns.
+
+As seal_approve* functions are standard Move functions, they can be tested locally using Move tests. Building and publishing the code can be done using the Sui CLI, e.g.,:
+
+
+$ cd examples/move
+$ sui move build
+$ sui client publish
+Limitations¶
+The seal_approve* functions are evaluated on full nodes using the dry_run_transaction_block RPC call. This call executes the associated Move code using the full node’s local view of the chain state. Because full nodes operate asynchronously, the result of dry_run_transaction_block may vary across nodes based on differences in their internal state.
+
+When using seal_approve* functions, keep the following in mind:
+
+Changes to onchain state may take time to propagate. As a result, full nodes may not always reflect the latest state.
+seal_approve* functions are not evaluated atomically across all key servers. Avoid relying on frequently changing state to determine access, as different full nodes may observe different versions of the chain.
+Do not rely on invariants that depend on the relative order of transactions within a checkpoint. For example, the following code assumes a specific ordering of increment operations, but full nodes may observe different intermediate counter values due to interleaved execution.
+
+struct Counter {
+    id: UID,
+    count: u64,
+}
+
+public fun increment(counter: &mut Counter) {
+    counter.count = counter.count + 1;
+}
+
+entry fun seal_approve(id: vector<u8>, cnt1: &Counter, cnt2: &Counter) {
+    assert!(cnt1.count == cnt2.count, ENoAccess);
+    ...
+}
+seal_approve* functions must be side-effect free and cannot modify onchain state.
+Although the Random module is available, its output is not secure and not deterministic across full nodes. Avoid using it within seal_approve* functions.
+During Seal evaluation, only seal_approve* functions can be invoked directly. These functions should not assume composition with other PTB (Programmable Transaction Block) commands.
+Encryption¶
+The recommended way to encrypt and decrypt the data is to use the Seal SDK.
+
+First, the app must select the set of key servers it intends to use. Each key server registers its name, public key, and URL onchain by creating a KeyServer object. To reference a key server, use the object ID of its corresponding KeyServer. A common approach for app developers is to use a fixed, preconfigured set of key servers within their app. Alternatively, the app can support a dynamic selection of key servers, for example, allowing users to choose which servers to use. In this case, the app should display a list of available key servers along with their URLs. After the user selects one or more servers, the app must verify that each provided URL corresponds to the claimed key server (see verifyKeyServers below).
+
+A key server may be used multiple times to enable weighting, which allows the app to specify how many times a key server can contribute towards reaching the decryption threshold. This is useful for scenarios where some key servers are more reliable or trusted than others, or when the app wants to ensure that certain key servers are always included in the decryption process.
+
+Info
+
+Anyone can create an onchain KeyServer object that references a known URL (such as seal.mystenlabs.com) but uses a different public key. To prevent impersonation, the SDK may perform a verification step: it fetches the object ID from the server’s /v1/service endpoint and compares it with the object ID registered onchain.
+
+Apps can define a list of Seal key server object IDs from the verified key servers available in each environment. You can use any Open mode key servers directly. For Permissioned mode servers, contact the key server operator to register your package ID and receive the corresponding object ID.
+
+Next, the app should create a SealClient object for the selected key servers.
+
+
+const suiClient = new SuiClient({ url: getFullnodeUrl('testnet') });
+
+// Replace this with a list of custom key server object IDs.
+// Replace with the Seal server object ids.
+const serverObjectIds = ["0x73d05d62c18d9374e3ea529e8e0ed6161da1a141a94d3f76ae3fe4e99356db75", "0xf5d14a81a982144ae441cd7d64b09027f116a468bd36e7eca494f750591623c8"];
+
+const client = new SealClient({
+  suiClient,
+  serverConfigs: serverObjectIds.map((id) => ({
+    objectId: id,
+    weight: 1,
+  })),
+  verifyKeyServers: false,
+});
+The serverConfigs is a list of objects, where each object contains a key server object ID and its weight. Recall that the weight indicates how many times the key server can contribute towards reaching the decryption threshold. In this example, all key servers are given equal weight 1. The config object may contain also the fields apiKeyName and apiKey for sending the HTTP header apiKeyName: apiKey in case a key server expects an API key.
+Set verifyKeyServers to true if the app or user needs to confirm that the provided URLs correctly correspond to the claimed key servers, as described above. Note that enabling verification introduces additional round-trip requests to the key servers. For best performance, use this option primarily when verifying key servers at app startup. Set verifyKeyServers to false when verification is not required.
+
+Next, the app can call the encrypt method on the client instance. This function requires the following parameters:
+
+The encryption threshold
+The package id of the deployed contract containing the seal_approve* functions
+The id associated with the access control policy (without the prefix of the package id discussed in Seal Design)
+The data to encrypt
+The encrypt function returns two values: the encrypted object, and the symmetric key used for encryption (i.e., the key from the DEM component of the KEM/DEM scheme). The symmetric key can either be ignored or returned to the user as a backup for disaster recovery. If retained, the user can decrypt the data manually using the CLI and the symmetric-decrypt command.
+
+
+const { encryptedObject: encryptedBytes, key: backupKey } = await client.encrypt({
+    threshold: 2,
+    packageId: fromHEX(packageId),
+    id: fromHEX(id),
+    data,
+});
+Note that the encryption does not conceal the size of the message. If message size is considered sensitive, pad the message with zeros until its length no longer reveals meaningful information.
+
+Note
+
+Seal supports encrypting an ephemeral symmetric key, which you can use to encrypt your actual content. This approach is useful when storing encrypted data immutably on Walrus while keeping the encrypted key separately on Sui. By managing the key separately, you can update access policies or rotate key servers without modifying the stored content.
+
+Tip
+
+The encryptedBytes returned from the encryption call can be parsed using EncryptedObject.parse(encryptedBytes). It returns an EncryptedObject instance that includes metadata such as the ID and other associated fields.
+
+Decryption¶
+Decryption involves a few additional steps:
+
+The app must create a SessionKey object to access the decryption keys for a specific package.
+The user must approve the request by signing it in their wallet. This grants time-limited access to the associated keys.
+The app stores the resulting signature in the SessionKey to complete its initialization.
+Once initialized, the session key can be used to retrieve multiple decryption keys for the specified package without requiring further user confirmation.
+
+
+const sessionKey = await SessionKey.create({
+    address: suiAddress,
+    packageId: fromHEX(packageId),
+    ttlMin: 10, // TTL of 10 minutes
+    suiClient: new SuiClient({ url: getFullnodeUrl('testnet') }),
+});
+const message = sessionKey.getPersonalMessage();
+const { signature } = await keypair.signPersonalMessage(message); // User confirms in wallet
+sessionKey.setPersonalMessageSignature(signature); // Initialization complete
+Note
+
+Notes on Session Key:
+
+You can also optionally initialize a SessionKey with a passed in Signer in the constructor. This is useful for classes that extend Signer, e.g. EnokiSigner.
+You can optionally set an mvr_name value in the SessionKey. This should be the Move Package Registry name for the package. Seal requires the MVR name to be registered to the first version of the package for this to work. If this is set, the message shown to the user in the wallet would use the much more readable MVR package name instead of packageId.
+You can optionally store the SessionKey object in IndexedDB instead of localStorage if you would like to persist the SessionKey across tabs. See usage for import and export methods in the SessionKey class.
+The simplest way to perform decryption is to call the client’s decrypt function. This function expects a Transaction object that invokes the relevant seal_approve* functions. The transaction must meet the following requirements:
+
+It may only call seal_approve* functions.
+All calls must be to the same package.
+
+// Create the Transaction for evaluating the seal_approve function.
+const tx = new Transaction();
+tx.moveCall({
+    target: `${packageId}::${moduleName}::seal_approve`, 
+    arguments: [
+        tx.pure.vector("u8", fromHEX(id)),
+        // other arguments
+   ]
+ });  
+const txBytes = tx.build( { client: suiClient, onlyTransactionKind: true })
+const decryptedBytes = await client.decrypt({
+    data: encryptedBytes,
+    sessionKey,
+    txBytes,
+});
+Seal evaluates the transaction as if the user sent it. In Move, TxContext::sender() returns the account that signed with the session key.
+
+Tip
+
+To debug a transaction, call dryRunTransactionBlock directly with the transaction block.
+
+The SealClient caches keys retrieved from Seal key servers to optimize performance during subsequent decryptions, especially when the same id is used across multiple encryptions. Reusing the same client instance helps reduce backend calls and improve latency. Refer to overall Performance Recommendations.
+
+To retrieve multiple keys more efficiently, use the fetchKeys function with a multi-command PTB. This approach is recommended when multiple keys are required, as it reduces the number of requests to the key servers. Because key servers may apply rate limiting, developers should design their applications and access policies to minimize the frequency of key retrieval requests.
+
+
+await client.fetchKeys({
+    ids: [id1, id2],
+    txBytes: txBytesWithTwoSealApproveCalls,
+    sessionKey,
+    threshold: 2,
+});
+Check out our integration tests for a full end-to-end example. You can also explore the example app to see how to implement allowlist and NFT-gated content access in practice.
+
+Tip
+
+If a key server request fails with an InvalidParameter error, the cause may be a recently created on-chain object in the PTB input. The key server's full node may not have indexed it yet. Wait a few seconds and retry the request, as subsequent attempts should succeed once the node is in sync.
+
+On-chain decryption¶
+Seal supports on-chain HMAC-CTR decryption in Move through the seal::bf_mac_encryption package. This enables Move packages to decrypt Seal-encrypted objects and use the results in on-chain logic such as auctions, secure voting (see voting.move), or other verifiable workflows.
+
+Use one of the published Seal package IDs as the SEAL_PACKAGE_ID:
+
+Testnet	0x927a54e9ae803f82ebf480136a9bcff45101ccbe28b13f433c89f5181069d682
+Mainnet	0xa212c4c6c7183b911d0be8768f4cb1df7a383025b5d0ba0c014009f0f30f5f8d
+To decrypt an encrypted object in a Move package, follow these steps:
+
+On-chain app initialization
+Retrieve public keys with client.getPublicKeys and convert them with bf_hmac_encryption::new_public_key.
+Store the key server public keys on-chain.
+The dapp/Users should verify the correctness of those public keys before uploading their encryptions.
+Verify derived keys
+Use the Seal SDK client to fetch derived keys via client.getDerivedKeys, which returns a map of key server object IDs to their derived keys.
+Convert bytes to Element<G1> or Element<G2> with from_bytes.
+Call bf_hmac_encryption::verify_derived_keys with the raw keys, package ID, identity, and the vector of key server public keys.
+The function returns a vector of VerifiedDerivedKey objects.
+Perform decryption
+Call bf_hmac_encryption::decrypt with the encrypted object, the verified derived keys, and the vector of public keys.
+The function returns an Option<vector<u8>>. If decryption fails, the return value will be None.
+On-chain decryption with the TypeScript SDK¶
+You can use the TypeScript SDK to build a transaction that calls Seal’s on-chain decryption functions.
+
+Before you decrypt (see Decryption), gather the following:
+
+encryptedBytes: BCS-serialized encrypted object.
+txBytes: a valid transaction block that calls the relevant seal_approve* policy function.
+client: an initialized SealClient.
+sessionKey: an initialized SessionKey.
+SEAL_PACKAGE_ID: the Seal package ID for the network.
+
+// 1. Parse the encrypted object.
+const encryptedObject = EncryptedObject.parse(encryptedBytes);
+
+// 2. Get derived keys from key servers for the encrypted object's ID. 
+const derivedKeys = await client.getDerivedKeys({
+  id: encryptedObject.id,
+  txBytes,
+  sessionKey,
+  threshold: encryptedObject.threshold,
+});
+
+// 3. Get the public keys corresponding to the derived keys.
+// In practice, this should should be done only during the app initialization.
+const publicKeys = await client.getPublicKeys(encryptedObject.services.map(([service, _]) => service));
+const correspondingPublicKeys = derivedKeys.keys().map((objectId) => {
+  const index = encryptedObject.services.findIndex(([s, _]) => s === objectId);
+  return tx.moveCall({
+    target: `${seal_package_id}::bf_hmac_encryption::new_public_key`,
+    arguments: [
+      tx.pure.address(objectId),
+      tx.pure.vector("u8", publicKeys[index].toBytes())
+    ],
+  });
+}).toArray();
+
+// 4. Convert the derived keys to G1 elements.
+const derivedKeysAsG1Elements = Array.from(derivedKeys).map(([_, value]) =>
+tx.moveCall({
+  target: `0x2::bls12381::g1_from_bytes`,
+  arguments: [ tx.pure.vector("u8", fromHex(value.toString())) ],
+})
+);
+
+// 5. Call the Move function verify_derived_keys. This should be cached if decryption for the same ID is performed again. 
+const verifiedDerivedKeys = tx.moveCall({
+  target: `${seal_package_id}::bf_hmac_encryption::verify_derived_keys`,
+  arguments: [
+  tx.makeMoveVec({ elements: derivedKeysAsG1Elements, type: '0x2::group_ops::Element<0x2::bls12381::G1>' }),
+  tx.pure.address(encryptedObject.packageId),
+  tx.pure.vector("u8", fromHex(encryptedObject.id)),
+    tx.makeMoveVec({ elements: correspondingPublicKeys, type: `${SEAL_PACKAGE_ID}::bf_hmac_encryption::PublicKey` }),
+  ],
+});
+
+// 6. Construct the parsed encrypted object onchain.
+const parsedEncryptedObject = tx.moveCall({
+  target: `${seal_package_id}::bf_hmac_encryption::parse_encrypted_object`,
+  arguments: [tx.pure.vector("u8", encryptedBytes)],
+});
+
+// 7. Construct a list of public key objects. 
+const allPublicKeys = publicKeys.map((publicKey, i) => tx.moveCall({
+  target: `${seal_package_id}::bf_hmac_encryption::new_public_key`,
+  arguments: [
+    tx.pure.address(encryptedObject.services[i][0]),
+    tx.pure.vector("u8", publicKey.toBytes())
+  ],
+}));
+
+// 7. Perform decryption with verified derived keys. 
+const decrypted = tx.moveCall({
+  target: `${seal_package_id}::bf_hmac_encryption::decrypt`,
+  arguments: [
+    parsedEncryptedObject,
+    verifiedDerivedKeys,
+    tx.makeMoveVec({ elements: allPublicKeys, type: `${SEAL_PACKAGE_ID}::bf_hmac_encryption::PublicKey` }),
+  ],
+});
+
+// The decryption result is in an option to be consumed if successful, `none` otherwise. 
+Optimizing performance¶
+To reduce latency and improve efficiency when using the Seal SDK, apply the following strategies based on your use case:
+
+Reuse the SealClient instance: The client caches retrieved keys and fetches necessary onchain objects during initialization. Reusing it prevents redundant setup work.
+Reuse the SessionKey: You can keep a session key active for a fixed duration to avoid prompting users multiple times. This also reuses previously fetched objects.
+Disable key server verification when not required: Set verifyKeyServers: false unless you explicitly need to validate key server URLs. Skipping verification saves round-trip latency during initialization.
+Include fully specified objects in PTBs: When creating programmable transaction blocks, pass complete object references (with versions). This reduces object resolution calls by a key server to the Sui Full node.
+Avoid unnecessary key retrievals: Reuse existing encrypted keys whenever possible and rely on the SDK’s internal caching to reduce overhead.
+[Advanced] Use fetchKeys() for batch decryption: Call fetchKeys() when retrieving multiple decryption keys. This groups requests and minimizes interactions with key servers.
+Other performance recommendations¶
+Choose AES for speed, and reserve HMAC-CTR for on-chain decryptions
+
+Use AES for most app data. It is significantly faster and more memory-efficient than HMAC-CTR. Use HMAC_CTR only when you need on-chain decryption of small-sized data.
+
+Use envelope (layered) encryption for large payloads
+
+For big files (videos, large datasets etc.), treat Seal as a KMS:
+
+Generate a symmetric key and encrypt the data with AES.
+Encrypt the symmetric key using Seal.
+Store the ciphertext (e.g., on Walrus) and keep a reference to the Seal-encrypted symmetric key.
+
+Seal design¶
+Overview¶
+Seal uses a cryptographic primitive called Identity-Based Encryption (IBE) to encrypt stored data. This design detail is abstracted away from both developers and users, as Seal does not have visibility into the data it helps secure.
+
+An IBE scheme consists of the following algorithms:
+
+Setup: Generates a master secret key msk and a master public key mpk.
+Derive(msk, id): Given a master secret key and an identity id (string or byte array), generates a derived secret key sk for that identity.
+Encrypt(mpk, id, m): Given a public key, an identity and a message, returns an encryption c.
+Decrypt(sk, c): Given a derived secret key and a ciphertext, compute the message m.
+Such a scheme is correct if for any id and m, (msk, mpk) ← Setup() and c ← Encrypt(mpk, id, m) we have Decrypt(Derive(msk, id), c) = m.
+
+Note that the domain of identities is not fixed, and can be any string/byte array. We use that property below to bound onchain strings to IBE identities.
+
+Seal consists of two main components:
+
+Access policies defined on Sui: A Move package at address PkgId controls the subdomain of IBE identities that starts with [PkgId] (i.e., all strings of the form [PkgId]*). You can think of [PkgId] as an identity namespace. The package defines, through Move code, who is authorized to access the keys associated with its identity subdomain.
+Off-chain Key Servers: Key servers are off-chain services, each holding a single IBE master secret key. Users can request a derived secret key for a specific identity. The key server returns the derived key only if the associated onchain access policy approves the request.
+Consider the following basic example for realizing time-lock encryption:
+
+
+module patterns::tle;
+
+use sui::bcs;
+use sui::clock;
+
+const ENoAccess : u64 = 1;
+
+/////////////////////////////////////////////
+/// Access control
+/// The IBE identity being used: [pkg id][bcs::to_bytes(time)]
+/// The following function accepts only the inner identity, i.e., [bcs::to_bytes(time)], and Seal extends it with the namespace.
+entry fun seal_approve(id: vector<u8>, c: &clock::Clock) {
+    // Convert the identity to u64.
+    let mut prepared: BCS = bcs::new(id);
+    let t = prepared.peel_u64();
+    let leftovers = prepared.into_remainder_bytes();
+
+    // Check that the time has passed and the entire identity is consumed.
+    assert!((leftovers.length() == 0) && (c.timestamp_ms() >= t), ENoAccess);
+}
+The module above controls all IBE identities that begin with its package ID PkgId. To encrypt data with a time-lock T, a user selects a key server and encrypts the data using the identity [PkgId][bcs::to_bytes(T)] and the server’s IBE master public key. Once the onchain time on Sui exceeds T, anyone can request the decryption key for the identity [PkgId][bcs::to_bytes(T)] from the Seal key server. Access control is enforced by the seal_approve function defined in the module. This function receives the requested identity (excluding the PkgId prefix) and a Clock as arguments. It returns success only if the current time is greater than or equal to T. The key server evaluates seal_approve to determine whether the derived key can be returned.
+
+Time-lock encryption can be applied to a variety of onchain use cases, including MEV-resistant trading, secure voting, and more. For additional examples and useful implementation patterns, see the Example patterns.
+
+The framework is fully generic. Developers can define custom authorization logic within seal_approve* functions and choose which key servers to use based on their application's needs. For example, they may use a fixed set of trusted key servers or allow users to select their preferred servers.
+
+When you upgrade a package, it retains the same identity subdomain. To support secure upgrades, follow the recommended best practices for versioned shared objects. Specifically, version your shared objects, or create a global versioned shared object for your package. For examples, see the allowlist and subscription patterns. Keep in mind that if a package is upgradeable, the access control policy can be changed at any time by the package owner. These changes are transparent and publicly visible onchain.
+
+Decentralization and trust model¶
+Seal is designed to reduce centralization using a couple of mechanisms.
+
+First, users can choose any combination of one or more key servers and use their master public keys to encrypt data. This setup supports t-out-of-n threshold encryption, which ensures:
+
+Privacy as long as fewer than t key servers are compromised
+Liveness as long as at least t key servers are available
+Seal does not mandate the use of any specific key server. Instead, users can select key servers based on their own trust assumptions. Key servers may vary in security characteristics, such as running within secure enclaves or being air-gapped, and may operate across different locations and jurisdictions.
+
+Info
+
+The set of key servers is not dynamic once the data is encrypted, and encrypted data cannot be changed to use a different set of servers.
+
+Secondly, a single key server can also be implemented using a multi-party computation (MPC) committee in a t-out-of-n configuration. This committee can consist of Sui validators or any other group of participants. This mechanism is not yet available, but we expect MPC-based key servers to be deployed in the near future. Users can choose to use these in addition to standalone key servers. In this setup, the participants in the MPC committee can change over time, allowing for dynamic membership.
+
+The security of encrypted data relies on the following assumptions:
+
+Key server integrity: The Seal key servers are not compromised, or, in the case of threshold encryption, fewer than the required threshold are compromised. This includes both the Seal key servers and the Sui full nodes they depend on to evaluate the access policies.
+Correct access control policy: The access control policy associated with the encrypted data is accurate and appropriately configured. If package upgrades are enabled, the package owner can modify the policy at any time.
+Key Server¶
+A light server is initialized with an identity-based encryption (IBE) master secret key and has access to a trusted full node. In simple deployments, the server runs as a backend service with the secret key stored in protected storage, optionally secured using a software or hardware vault. More advanced deployments may use secure enclaves, MPC committees, or even air-gapped environments to enhance security.
+
+The server exposes only two APIs:
+
+/v1/service - Returns information about the service's onchain registered information.
+/v1/fetch_key - Handles a request for one or more derived keys and returns them if access is permitted by the associated package / policies. Each request must meet the following requirements:
+Be signed by the user's address using signPersonalMessage. For details, see the signed_message format.
+Include a valid PTB, which is evaluated against the seal_approve* rules. For PTB construction guidelines, see valid_ptb.
+Provide an ephemeral encryption key to encrypt the response. Encrypting the response ensures that only the requester (the initiator) can decrypt and access the returned keys.
+See crates/key-server for the implementation of the key server.
+
+User confirmation and sessions¶
+Decryption keys returned from the key server are returned directly to the caller, which is typically the dApp's web page. To ensure that dApps can access only keys explicitly approved by the user, the user must approve the key access request in their wallet. This approval is granted once per package and authorizes a session key. The session key allows the dApp to retrieve associated decryption keys for a limited time without requiring repeated user confirmations.
+
+Cryptographic primitives¶
+Seal is designed to support multiple identity-based encryption (IBE) schemes as Key Encapsulation Mechanisms (KEMs) and various symmetric encryption schemes as Data Encapsulation Mechanisms (DEMs). Currently supported primitives include:
+
+KEM: Boneh-Franklin IBE with the BLS12-381 curve.
+DEM: AES-256-GCM, HMAC based CTR mode. Prefer AES-256-GCM for most use cases as it is faster. Use HMAC-CTR only when you require on-chain decryption.
+Post-quantum primitives are planned to be added in the future.
+
+For advanced encryption schemes, use Seal as a KMS to protect the scheme’s secret key. This approach enables streaming, hardware-assisted, or chunked decryption while keeping keys out of application code.

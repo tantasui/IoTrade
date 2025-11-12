@@ -1,0 +1,161 @@
+// Prisma Schema for IoT Data Marketplace
+// Database: PostgreSQL (Koyeb)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// API Keys for authentication
+// pk_xxx = Provider keys (for IoT devices to upload data)
+// sk_xxx = Subscriber keys (for accessing subscribed data)
+model ApiKey {
+  id            String   @id @default(cuid())
+  keyHash       String   @unique @map("key_hash") // Hashed API key
+  keyPrefix     String   @map("key_prefix") // pk_xxx or sk_xxx (first 8 chars for identification)
+  type          ApiKeyType
+  feedId        String?  @map("feed_id") // For provider keys, links to feed
+  subscriptionId String? @map("subscription_id") // For subscriber keys, links to subscription
+  providerAddress String? @map("provider_address") // Wallet address of provider
+  consumerAddress String? @map("consumer_address") // Wallet address of subscriber
+  
+  // Metadata
+  name          String?  // Optional name for the key
+  description   String?  // Optional description
+  createdAt     DateTime @default(now()) @map("created_at")
+  expiresAt     DateTime? @map("expires_at") // Optional expiration
+  revokedAt     DateTime? @map("revoked_at") // When key was revoked
+  
+  // Usage tracking
+  lastUsedAt    DateTime? @map("last_used_at")
+  usageCount    Int      @default(0) @map("usage_count")
+  
+  // Rate limiting (per subscription tier)
+  rateLimit     Int?     @map("rate_limit") // Requests per minute
+  
+  // Relations
+  usageLogs     UsageLog[]
+  device        Device?
+  
+  @@index([keyHash])
+  @@index([feedId])
+  @@index([subscriptionId])
+  @@index([providerAddress])
+  @@index([consumerAddress])
+  @@index([type, revokedAt])
+  @@map("api_keys")
+}
+
+enum ApiKeyType {
+  PROVIDER  // For IoT devices uploading data
+  SUBSCRIBER // For accessing subscribed data
+}
+
+// Usage logs for analytics and billing
+model UsageLog {
+  id              String   @id @default(cuid())
+  apiKeyId        String   @map("api_key_id")
+  feedId          String?  @map("feed_id")
+  subscriptionId  String?  @map("subscription_id")
+  
+  // Request details
+  endpoint        String   // e.g., "/api/iot/feeds/xxx/update"
+  method          String   // GET, POST, etc.
+  statusCode      Int      @map("status_code")
+  responseTime    Int      @map("response_time") // milliseconds
+  
+  // Usage metrics
+  queriesUsed     Int?     @default(0) @map("queries_used")
+  dataSize        Int?     @map("data_size") // bytes
+  
+  // Metadata
+  ipAddress       String?  @map("ip_address")
+  userAgent       String?  @map("user_agent")
+  timestamp       DateTime @default(now())
+  
+  // Relations
+  apiKey          ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  
+  @@index([apiKeyId])
+  @@index([feedId])
+  @@index([subscriptionId])
+  @@index([timestamp])
+  @@map("usage_logs")
+}
+
+// Device registration (optional)
+model Device {
+  id              String   @id @default(cuid())
+  feedId          String   @map("feed_id")
+  deviceId        String   @map("device_id") // External device identifier
+  apiKeyId        String   @unique @map("api_key_id")
+  
+  // Device metadata
+  name            String?
+  deviceType      String?  @map("device_type") // e.g., "ESP32+DHT22"
+  location        String?
+  description     String?
+  
+  // Status tracking
+  status          DeviceStatus @default(ONLINE)
+  lastSeenAt      DateTime @default(now()) @map("last_seen_at")
+  lastDataAt      DateTime? @map("last_data_at")
+  
+  // Health monitoring
+  consecutiveErrors Int    @default(0) @map("consecutive_errors")
+  totalUploads    Int      @default(0) @map("total_uploads")
+  
+  // Metadata (flexible JSON)
+  metadata        Json?    // Additional device-specific data
+  
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  apiKey          ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  
+  @@unique([feedId, deviceId])
+  @@index([feedId])
+  @@index([status, lastSeenAt])
+  @@map("devices")
+}
+
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  ERROR
+  PAUSED
+}
+
+// Historical data metadata index
+// Actual data stays in Walrus, this indexes it for quick queries
+model DataHistory {
+  id              String   @id @default(cuid())
+  feedId          String   @map("feed_id")
+  blobId          String   @map("blob_id") // Walrus blob ID
+  
+  // Timestamps
+  timestamp       DateTime @default(now())
+  uploadedAt      DateTime @default(now()) @map("uploaded_at")
+  
+  // Data summary (for quick queries without fetching full blob)
+  dataSummary     Json?    @map("data_summary") // e.g., {temperature: 72, humidity: 45}
+  dataSize        Int      @map("data_size") // bytes
+  
+  // Source tracking
+  uploadedBy      String?  @map("uploaded_by") // device_id or api_key_id
+  deviceId        String?  @map("device_id")
+  apiKeyId        String?  @map("api_key_id")
+  
+  // Relations (optional, for tracking)
+  
+  @@index([feedId, timestamp])
+  @@index([blobId])
+  @@index([uploadedAt])
+  @@map("data_history")
+}
+
