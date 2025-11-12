@@ -121,10 +121,11 @@ class ApiClient {
     return response.data as DataHistoryResponse;
   }
 
-  async uploadData(data: any, encrypt?: boolean): Promise<UploadDataResponse> {
+  async uploadData(data: any, encrypt?: boolean, feedId?: string): Promise<UploadDataResponse> {
     const response = await this.client.post('/api/data/upload', {
       data,
       encrypt,
+      feedId,
     });
     return response.data as UploadDataResponse;
   }

@@ -60,7 +60,6 @@ export default function ProviderDashboard() {
     try {
       console.log('[Provider] handleSubmit start', { formData });
       
-      // Step 1: Upload initial data to Walrus (backend API)
       let parsedData;
       try {
         parsedData = JSON.parse(formData.initialData);
@@ -68,17 +67,6 @@ export default function ProviderDashboard() {
         parsedData = formData.initialData;
       }
 
-      console.log('[Provider] Uploading data to Walrus...');
-      const uploadResponse = await apiClient.uploadData(parsedData, formData.isPremium);
-      
-      if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
-        throw new Error('Failed to upload data to Walrus');
-      }
-
-      const walrusBlobId = uploadResponse.data.blobId;
-      console.log('[Provider] Data uploaded to Walrus:', walrusBlobId);
-
-      // Step 2: Register feed on-chain (wallet signing)
       const packageId = getPackageId();
       const registryId = getRegistryId();
       
@@ -86,20 +74,71 @@ export default function ProviderDashboard() {
         throw new Error('Missing environment variables: NEXT_PUBLIC_SUI_PACKAGE_ID or NEXT_PUBLIC_SUI_REGISTRY_ID');
       }
 
-      console.log('[Provider] Registering feed on-chain...');
-      const feedId = await registerFeed(registryId, {
-        name: formData.name,
-        category: formData.category,
-        description: formData.description,
-        location: formData.location,
-        pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000), // Convert to MIST
-        monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
-        isPremium: formData.isPremium,
-        walrusBlobId: walrusBlobId,
-        updateFrequency: formData.updateFrequency,
-      }, packageId);
+      let walrusBlobId: string;
+      let feedId: string;
 
-      console.log('[Provider] Feed registered:', feedId);
+      if (formData.isPremium) {
+        // For premium feeds: Register feed first to get feedId, then encrypt and upload
+        console.log('[Provider] Premium feed: Registering feed first to get feedId...');
+        
+        // Register feed with placeholder blobId
+        feedId = await registerFeed(registryId, {
+          name: formData.name,
+          category: formData.category,
+          description: formData.description,
+          location: formData.location,
+          pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000),
+          monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
+          isPremium: formData.isPremium,
+          walrusBlobId: 'placeholder', // Temporary placeholder
+          updateFrequency: formData.updateFrequency,
+        }, packageId);
+
+        console.log('[Provider] Feed registered with feedId:', feedId);
+
+        // Now encrypt and upload data with the feedId
+        console.log('[Provider] Encrypting and uploading data with Seal...');
+        const uploadResponse = await apiClient.uploadData(parsedData, true, feedId);
+        
+        if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
+          throw new Error('Failed to upload encrypted data to Walrus');
+        }
+
+        walrusBlobId = uploadResponse.data.blobId;
+        console.log('[Provider] Encrypted data uploaded to Walrus:', walrusBlobId);
+
+        // Update feed with the real blobId
+        console.log('[Provider] Updating feed with real blobId...');
+        await updateFeedData(feedId, walrusBlobId, packageId);
+        console.log('[Provider] Feed updated with blobId');
+      } else {
+        // For non-premium feeds: Upload first, then register (original flow)
+        console.log('[Provider] Uploading data to Walrus...');
+        const uploadResponse = await apiClient.uploadData(parsedData, false);
+        
+        if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
+          throw new Error('Failed to upload data to Walrus');
+        }
+
+        walrusBlobId = uploadResponse.data.blobId;
+        console.log('[Provider] Data uploaded to Walrus:', walrusBlobId);
+
+        // Register feed on-chain
+        console.log('[Provider] Registering feed on-chain...');
+        feedId = await registerFeed(registryId, {
+          name: formData.name,
+          category: formData.category,
+          description: formData.description,
+          location: formData.location,
+          pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000),
+          monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
+          isPremium: formData.isPremium,
+          walrusBlobId: walrusBlobId,
+          updateFrequency: formData.updateFrequency,
+        }, packageId);
+
+        console.log('[Provider] Feed registered:', feedId);
+      }
 
       // Feed is already shared, so consumers can subscribe directly
       // No need to call share_feed_for_subscriptions

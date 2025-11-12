@@ -118,7 +118,7 @@ export function useSeal() {
   const constructMoveCall = useCallback((packageId: string, feedId: string, subscriptionId: string) => {
     return (tx: Transaction, id: string) => {
       tx.moveCall({
-        target: `${packageId}::iot_marketplace::seal_access::seal_approve`,
+        target: `${packageId}::seal_access::seal_approve`,
         arguments: [
           tx.pure.vector('u8', fromHEX(id.replace('0x', ''))), // Seal identity (vector<u8>)
           tx.object(feedId), // DataFeed object

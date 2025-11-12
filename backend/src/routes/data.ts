@@ -301,10 +301,11 @@ router.get('/:feedId/history', async (req: Request | AuthenticatedRequest, res: 
 /**
  * POST /api/data/upload
  * Upload data to Walrus (utility endpoint)
+ * For premium feeds, feedId is required for Seal encryption
  */
 router.post('/upload', async (req: Request, res: Response) => {
   try {
-    const { data, encrypt } = req.body;
+    const { data, encrypt, feedId } = req.body;
 
     if (!data) {
       return res.status(400).json({
@@ -313,7 +314,15 @@ router.post('/upload', async (req: Request, res: Response) => {
       });
     }
 
-    const blobId = await walrusService.uploadData(data, encrypt || false);
+    // For premium feeds, feedId is required for Seal encryption
+    if (encrypt && !feedId) {
+      return res.status(400).json({
+        success: false,
+        error: 'feedId is required for premium feed encryption'
+      });
+    }
+
+    const blobId = await walrusService.uploadData(data, encrypt || false, feedId);
 
     res.json({
       success: true,
