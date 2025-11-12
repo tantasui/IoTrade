@@ -365,11 +365,6 @@ export default function ProviderDashboard() {
                 <div key={feed.id} className="card">
                   <div className="flex justify-between items-start mb-4">
                     <h3 className="text-lg font-bold text-[#2d2d2d]">{feed.name}</h3>
-                    {feed.isPremium ? (
-                      <span className="badge-premium">Premium</span>
-                    ) : (
-                      <span className="badge-free">Free</span>
-                    )}
                   </div>
 
                   <p className="text-sm text-[#333333] mb-4">{feed.description}</p>
@@ -473,7 +468,7 @@ export default function ProviderDashboard() {
                   <div className="bg-[#f5f5f5] p-3 rounded-[4px] mb-3 border border-[#e0e0e0]">
                     <p className="text-xs text-[#333333] mb-1">Use this endpoint in your IoT device:</p>
                     <code className="text-xs font-mono break-all text-[#2d2d2d] bg-white px-2 py-1 rounded-[4px] block border border-[#e0e0e0]">
-                      {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/iot/feeds/{selectedFeed.id}/update
+                      {process.env.NEXT_PUBLIC_API_URL || 'https://io-trade.vercel.app'}/api/iot/feeds/{selectedFeed.id}/update
                     </code>
                   </div>
                   <p className="text-xs text-[#333333] mb-3">

@@ -16,7 +16,18 @@ import {
   CreateApiKeyResponseType,
 } from '@/types/api';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// Get API URL - use environment variable or fallback to deployed backend
+export const getApiUrl = () => {
+  return process.env.NEXT_PUBLIC_API_URL || 'https://io-trade.vercel.app';
+};
+
+const API_URL = getApiUrl();
+
+// Debug: Log the API URL being used (only in browser)
+if (typeof window !== 'undefined') {
+  console.log('[ApiClient] API_URL:', API_URL);
+  console.log('[ApiClient] NEXT_PUBLIC_API_URL env:', process.env.NEXT_PUBLIC_API_URL);
+}
 
 class ApiClient {
   private client: AxiosInstance;
@@ -28,6 +39,9 @@ class ApiClient {
         'Content-Type': 'application/json',
       },
     });
+    
+    // Log the actual base URL being used
+    console.log('[ApiClient] Initialized with baseURL:', this.client.defaults.baseURL);
   }
 
   // =================== Feeds ===================

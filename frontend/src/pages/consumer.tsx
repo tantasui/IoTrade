@@ -22,7 +22,6 @@ export default function ConsumerMarketplace() {
   // Filters
   const [filters, setFilters] = useState({
     category: 'all',
-    isPremium: 'all',
     location: '',
   });
 
@@ -52,12 +51,6 @@ export default function ConsumerMarketplace() {
 
     if (filters.category !== 'all') {
       filtered = filtered.filter((feed) => feed.category === filters.category);
-    }
-
-    if (filters.isPremium === 'premium') {
-      filtered = filtered.filter((feed) => feed.isPremium);
-    } else if (filters.isPremium === 'free') {
-      filtered = filtered.filter((feed) => !feed.isPremium);
     }
 
     if (filters.location) {
@@ -204,19 +197,6 @@ export default function ConsumerMarketplace() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2 text-[#2d2d2d]">Type</label>
-            <select
-              className="input"
-              value={filters.isPremium}
-              onChange={(e) => setFilters({ ...filters, isPremium: e.target.value })}
-            >
-              <option value="all">All Types</option>
-              <option value="free">Free</option>
-              <option value="premium">Premium</option>
-            </select>
-          </div>
-
-          <div>
             <label className="block text-sm font-medium mb-2 text-[#2d2d2d]">Location</label>
             <input
               type="text"
@@ -246,11 +226,6 @@ export default function ConsumerMarketplace() {
               <div key={feed.id} className="card">
                 <div className="flex justify-between items-start mb-4">
                   <h3 className="text-lg font-bold text-[#2d2d2d]">{feed.name}</h3>
-                  {feed.isPremium ? (
-                    <span className="badge-premium">Premium</span>
-                  ) : (
-                    <span className="badge-free">Free</span>
-                  )}
                 </div>
 
                 <p className="text-sm text-[#333333] mb-4 line-clamp-3">{feed.description}</p>

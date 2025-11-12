@@ -354,11 +354,11 @@ export default function SubscriberDashboard() {
                     <p className="text-xs text-[#333333] mb-1">Use this endpoint to access data:</p>
                     <div className="flex items-center gap-2">
                       <code className="text-xs font-mono break-all text-[#2d2d2d] bg-white px-2 py-1 rounded-[4px] flex-1 border border-[#e0e0e0]">
-                        {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/data/{selectedSubscription.feedId}
+                        {process.env.NEXT_PUBLIC_API_URL || 'https://io-trade.vercel.app'}/api/data/{selectedSubscription.feedId}
                       </code>
                       <button
                         onClick={(e) => {
-                          const endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/data/${selectedSubscription.feedId}`;
+                          const endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'https://io-trade.vercel.app'}/api/data/${selectedSubscription.feedId}`;
                           navigator.clipboard.writeText(endpoint);
                           // Show brief feedback
                           const btn = e.currentTarget;

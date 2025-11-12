@@ -141,7 +141,6 @@ export function useSuiWallet() {
       location: string;
       pricePerQuery: number;
       monthlySubscriptionPrice: number;
-      isPremium: boolean;
       walrusBlobId: string;
       updateFrequency: number;
     },
@@ -167,7 +166,7 @@ export function useSuiWallet() {
           tx.pure.string(feedData.location),
           tx.pure.u64(BigInt(feedData.pricePerQuery)),
           tx.pure.u64(BigInt(feedData.monthlySubscriptionPrice)),
-          tx.pure.bool(feedData.isPremium),
+          tx.pure.bool(false), // isPremium - always false (Seal feature removed)
           tx.pure.string(feedData.walrusBlobId),
           tx.pure.u64(BigInt(feedData.updateFrequency)),
         ],
