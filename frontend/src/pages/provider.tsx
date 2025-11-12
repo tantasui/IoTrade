@@ -27,7 +27,6 @@ export default function ProviderDashboard() {
     location: '',
     pricePerQuery: 0,
     monthlySubscriptionPrice: 0.1,
-    isPremium: false,
     updateFrequency: 300,
     initialData: '',
   });
@@ -69,7 +68,7 @@ export default function ProviderDashboard() {
       }
 
       console.log('[Provider] Uploading data to Walrus...');
-      const uploadResponse = await apiClient.uploadData(parsedData, formData.isPremium);
+      const uploadResponse = await apiClient.uploadData(parsedData);
       
       if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
         throw new Error('Failed to upload data to Walrus');
@@ -94,7 +93,6 @@ export default function ProviderDashboard() {
         location: formData.location,
         pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000), // Convert to MIST
         monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
-        isPremium: formData.isPremium,
         walrusBlobId: walrusBlobId,
         updateFrequency: formData.updateFrequency,
       }, packageId);
@@ -121,7 +119,6 @@ export default function ProviderDashboard() {
         location: '',
         pricePerQuery: 0,
         monthlySubscriptionPrice: 0.1,
-        isPremium: false,
         updateFrequency: 300,
         initialData: '',
       });
@@ -327,19 +324,6 @@ export default function ProviderDashboard() {
                   placeholder='{"temperature": 72, "humidity": 45}'
                   required
                 />
-              </div>
-
-              <div className="flex items-center">
-                <input
-                  type="checkbox"
-                  id="isPremium"
-                  checked={formData.isPremium}
-                  onChange={(e) => setFormData({ ...formData, isPremium: e.target.checked })}
-                  className="mr-2"
-                />
-                <label htmlFor="isPremium" className="text-sm font-medium">
-                  Premium Feed (Seal encrypted)
-                </label>
               </div>
 
               <div className="flex gap-4">

@@ -164,7 +164,7 @@ export default function Layout({ children }: LayoutProps) {
             </div>
           </div>
           <div className="mt-8 pt-8 border-t border-[#e0e0e0] text-center text-sm text-[#333333]">
-            © 2024 IoTrade. Built for Sui Hackathon.
+            © 2024 IoTrade. Built for Halout.
           </div>
         </div>
       </footer>
