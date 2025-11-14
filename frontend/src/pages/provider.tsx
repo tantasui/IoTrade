@@ -12,6 +12,8 @@ export default function ProviderDashboard() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [selectedFeed, setSelectedFeed] = useState<DataFeed | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [copiedFeedId, setCopiedFeedId] = useState(false);
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
   const [modal, setModal] = useState<{ isOpen: boolean; title: string; message: string; type?: 'success' | 'error' | 'info' }>({
     isOpen: false,
     title: '',
@@ -494,9 +496,34 @@ export default function ProviderDashboard() {
                 <div>
                   <h3 className="font-bold mb-4 text-[#2d2d2d]">Feed Details</h3>
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center gap-2">
                       <span className="text-[#333333]">Feed ID:</span>
-                      <code className="font-mono text-xs text-[#2d2d2d] bg-[#f5f5f5] px-2 py-1 rounded-[4px] break-all border border-[#e0e0e0]">{selectedFeed.id}</code>
+                      <div className="flex items-center gap-1 flex-1 justify-end">
+                        <code className="font-mono text-xs text-[#2d2d2d] bg-[#f5f5f5] px-2 py-1 rounded-[4px] break-all border border-[#e0e0e0]">{selectedFeed.id}</code>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(selectedFeed.id);
+                              setCopiedFeedId(true);
+                              setTimeout(() => setCopiedFeedId(false), 2000);
+                            } catch (err) {
+                              console.error('Failed to copy:', err);
+                            }
+                          }}
+                          className="p-1 hover:bg-[#f5f5f5] rounded-[4px] transition-colors text-[#333333] hover:text-[#2d2d2d]"
+                          title="Copy Feed ID"
+                        >
+                          {copiedFeedId ? (
+                            <svg className="w-4 h-4 text-[#56c214]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-[#333333]">Category:</span>
@@ -527,9 +554,35 @@ export default function ProviderDashboard() {
                   <h3 className="font-bold mb-4 text-[#2d2d2d]">IoT Device Endpoint</h3>
                   <div className="bg-[#f5f5f5] p-3 rounded-[4px] mb-3 border border-[#e0e0e0]">
                     <p className="text-xs text-[#333333] mb-1">Use this endpoint in your IoT device:</p>
-                    <code className="text-xs font-mono break-all text-[#2d2d2d] bg-white px-2 py-1 rounded-[4px] block border border-[#e0e0e0]">
-                      {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/iot/feeds/{selectedFeed.id}/update
-                    </code>
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs font-mono break-all text-[#2d2d2d] bg-white px-2 py-1 rounded-[4px] flex-1 border border-[#e0e0e0]">
+                        {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/iot/feeds/{selectedFeed.id}/update
+                      </code>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/iot/feeds/${selectedFeed.id}/update`;
+                            await navigator.clipboard.writeText(endpoint);
+                            setCopiedEndpoint(true);
+                            setTimeout(() => setCopiedEndpoint(false), 2000);
+                          } catch (err) {
+                            console.error('Failed to copy:', err);
+                          }
+                        }}
+                        className="p-1 hover:bg-white rounded-[4px] transition-colors text-[#333333] hover:text-[#2d2d2d] flex-shrink-0"
+                        title="Copy endpoint"
+                      >
+                        {copiedEndpoint ? (
+                          <svg className="w-4 h-4 text-[#56c214]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xs text-[#333333] mb-3">
                     Include your API key in the <code className="bg-[#f5f5f5] px-1 rounded-[4px] text-[#2d2d2d] border border-[#e0e0e0]">X-API-Key</code> header

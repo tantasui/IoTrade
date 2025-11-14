@@ -13,8 +13,38 @@
 import { PrismaClient } from '@prisma/client';
 import { withAccelerate } from '@prisma/extension-accelerate';
 
+/**
+ * Enhance DATABASE_URL with connection pool parameters if not already present
+ * This prevents connection pool exhaustion and timeouts
+ */
+function enhanceDatabaseUrl(url: string): string {
+  // Skip if already has connection_limit or pool_timeout
+  if (url.includes('connection_limit') || url.includes('pool_timeout')) {
+    return url;
+  }
+
+  // Only enhance PostgreSQL URLs
+  if (!url.startsWith('postgres://') && !url.startsWith('postgresql://')) {
+    return url;
+  }
+
+  // Parse URL to add parameters
+  const urlObj = new URL(url);
+  
+  // Set connection pool parameters
+  // connection_limit: Maximum number of connections in the pool (increased from default 10)
+  // pool_timeout: Maximum time to wait for a connection (increased from default 20s)
+  // connect_timeout: Time to wait when establishing connection
+  urlObj.searchParams.set('connection_limit', '20');
+  urlObj.searchParams.set('pool_timeout', '60');
+  urlObj.searchParams.set('connect_timeout', '10');
+  
+  return urlObj.toString();
+}
+
 // Check connection type
 const databaseUrl = process.env.DATABASE_URL || '';
+const enhancedDatabaseUrl = enhanceDatabaseUrl(databaseUrl);
 const isAccelerateUrl = databaseUrl.includes('prisma+postgres://') && databaseUrl.includes('accelerate.prisma-data.net');
 const isDirectPostgresUrl = databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://');
 const disableAccelerate = process.env.DISABLE_PRISMA_ACCELERATE === 'true';
@@ -37,13 +67,14 @@ const prismaClientSingleton = () => {
       log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
       datasources: {
         db: {
-          url: databaseUrl,
+          url: enhancedDatabaseUrl, // Use enhanced URL with pool parameters
         },
       },
     });
 
     if (process.env.NODE_ENV === 'development') {
       console.log(`[PrismaService] Using Direct PostgreSQL connection`);
+      console.log(`[PrismaService] Connection pool: limit=20, timeout=60s`);
     }
 
     return client;
@@ -70,6 +101,11 @@ const prismaClientSingleton = () => {
     // Fallback to direct connection if Accelerate fails
     return new PrismaClient({
       log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
+      datasources: {
+        db: {
+          url: enhancedDatabaseUrl, // Use enhanced URL with pool parameters
+        },
+      },
     });
   }
 };
@@ -82,6 +118,19 @@ const prisma = globalThis.prismaGlobal ?? prismaClientSingleton();
 
 if (process.env.NODE_ENV !== 'production') {
   globalThis.prismaGlobal = prisma;
+}
+
+/**
+ * Gracefully disconnect Prisma Client
+ * Call this on application shutdown to release all connections
+ */
+export async function disconnectPrisma(): Promise<void> {
+  try {
+    await prisma.$disconnect();
+    console.log('[PrismaService] Disconnected from database');
+  } catch (error: any) {
+    console.error('[PrismaService] Error disconnecting:', error.message);
+  }
 }
 
 export default prisma as PrismaClient;

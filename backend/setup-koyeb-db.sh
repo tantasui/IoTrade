@@ -25,6 +25,9 @@ echo "DATABASE_URL=\"${DATABASE_URL}\"" >> .env
 
 echo "✅ DATABASE_URL configured!"
 echo ""
+echo "Note: Connection pool parameters (connection_limit=20, pool_timeout=60s)"
+echo "      will be automatically added by PrismaService to prevent connection timeouts."
+echo ""
 echo "Next steps:"
 echo "  1. Run: npx prisma migrate dev --name init"
 echo "  2. Run: npx prisma generate"

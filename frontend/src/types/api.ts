@@ -53,6 +53,8 @@ export type DataResponse = ApiSuccess<any> & {
   encryptionType?: 'seal' | 'aes';
 } | ApiError;
 export type DataHistoryResponse = ApiSuccess<Array<{ timestamp: number; data: any }>> & { count: number } | ApiError;
+export type UploadDataResponse = ApiSuccess<{ blobId: string }> | ApiError;
+export type HealthResponse = ApiSuccess<{ status: string; timestamp: string; version: string }> | ApiError;
 export interface ApiKey {
   id: string;
   keyPrefix: string; // pk_ or sk_

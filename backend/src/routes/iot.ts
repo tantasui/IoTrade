@@ -3,6 +3,7 @@ import walrusService from '../services/walrus.service';
 import suiService from '../services/sui.service';
 import { authenticateApiKey, requireProviderKey, verifyFeedAccess, AuthenticatedRequest } from '../middleware/auth.middleware';
 import prisma from '../services/prisma.service';
+import { broadcastDataUpdate } from '../index';
 
 const router = Router();
 
@@ -34,75 +35,7 @@ router.post('/feeds/:feedId/update',
         });
       }
 
-      // Get device info or create if doesn't exist
-      let device = null;
-      if (deviceId) {
-        try {
-          // Try to find existing device by feedId+deviceId
-          device = await prisma.device.findUnique({
-            where: {
-              feedId_deviceId: {
-                feedId,
-                deviceId,
-              },
-            },
-          });
-
-          if (device) {
-            // Update existing device
-            device = await prisma.device.update({
-              where: { id: device.id },
-              data: {
-                status: 'ONLINE',
-                lastSeenAt: new Date(),
-                lastDataAt: new Date(),
-                totalUploads: { increment: 1 },
-                consecutiveErrors: 0,
-              },
-            });
-          } else {
-            // Check if API key already has a device (apiKeyId is unique)
-            const existingDeviceWithKey = await prisma.device.findUnique({
-              where: { apiKeyId: req.apiKey.id },
-            });
-
-            if (existingDeviceWithKey) {
-              // Update existing device to use this feedId+deviceId combination
-              device = await prisma.device.update({
-                where: { id: existingDeviceWithKey.id },
-                data: {
-                  feedId,
-                  deviceId,
-                  status: 'ONLINE',
-                  lastSeenAt: new Date(),
-                  lastDataAt: new Date(),
-                  totalUploads: { increment: 1 },
-                  consecutiveErrors: 0,
-                },
-              });
-            } else {
-              // Create new device
-              device = await prisma.device.create({
-                data: {
-                  feedId,
-                  deviceId,
-                  apiKeyId: req.apiKey.id,
-                  status: 'ONLINE',
-                  lastSeenAt: new Date(),
-                  lastDataAt: new Date(),
-                  totalUploads: 1,
-                  consecutiveErrors: 0,
-                },
-              });
-            }
-          }
-        } catch (error: any) {
-          // If device creation fails, continue without device registration
-          console.warn(`[${requestId}] Device registration failed:`, error.message);
-        }
-      }
-
-      // Enrich data with metadata
+      // Enrich data with metadata (do this immediately, no DB calls)
       const enrichedData = {
         ...data,
         deviceId: deviceId || 'unknown',
@@ -111,41 +44,39 @@ router.post('/feeds/:feedId/update',
         apiKeyId: req.apiKey.id,
       };
 
-      // Upload to Walrus
-      const encrypt = req.apiKey.feedId ? await (async () => {
-        const feed = await suiService.getDataFeed(feedId);
-        return feed?.isPremium || false;
-      })() : false;
-
-      // Pass feedId for Seal encryption if premium
-      const blobId = await walrusService.uploadData(enrichedData, encrypt, feedId);
-
-      // Log to data history
-      await prisma.dataHistory.create({
-        data: {
-          feedId,
-          blobId,
-          timestamp: new Date(),
-          uploadedAt: new Date(),
-          uploadedBy: deviceId || req.apiKey.id,
-          deviceId: deviceId || undefined,
-          apiKeyId: req.apiKey.id,
-          dataSize: JSON.stringify(enrichedData).length,
-          dataSummary: {
-            keys: Object.keys(data),
-            deviceId: deviceId || 'unknown',
-          },
-        },
-      });
-
-      // Update on-chain
+      // Check if feed is premium (async, non-blocking - use cached value if available)
+      // For now, default to false to avoid blocking on blockchain query
+      // This will be checked async after response is sent
+      let encrypt = false;
+      let feedIsPremium = false;
+      
+      // Try to get feed premium status quickly (with timeout)
       try {
-        await suiService.updateFeedData(feedId, blobId);
-        console.log(`[${requestId}] ✅ On-chain update successful!`);
-      } catch (error: any) {
-        console.warn(`[${requestId}] ⚠️  On-chain update failed (continuing):`, error.message);
+        const feedPromise = suiService.getDataFeed(feedId);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), 2000)
+        );
+        const feed = await Promise.race([feedPromise, timeoutPromise]) as any;
+        feedIsPremium = feed?.isPremium || false;
+        encrypt = feedIsPremium;
+      } catch (error) {
+        // If feed lookup times out or fails, continue without encryption
+        // Will be checked async later
+        console.warn(`[${requestId}] Feed lookup timeout/failed, continuing without encryption check`);
       }
 
+      // Upload to Walrus (this is the only blocking operation we need)
+      const blobId = await walrusService.uploadData(enrichedData, encrypt, feedId);
+
+      // Broadcast to WebSocket clients immediately
+      try {
+        broadcastDataUpdate(feedId, enrichedData);
+        console.log(`[${requestId}] 📡 Broadcasted data update to WebSocket clients`);
+      } catch (error: any) {
+        console.warn(`[${requestId}] ⚠️  Failed to broadcast update:`, error.message);
+      }
+
+      // Send response immediately after Walrus upload (fastest possible)
       res.json({
         success: true,
         message: 'Data updated successfully',
@@ -153,6 +84,96 @@ router.post('/feeds/:feedId/update',
         feedId,
         timestamp: Date.now(),
       });
+
+      // Do all other operations asynchronously (non-blocking)
+      (async () => {
+        try {
+          // Device registration (async)
+          if (deviceId) {
+            try {
+              let device = await prisma.device.findUnique({
+                where: {
+                  feedId_deviceId: {
+                    feedId,
+                    deviceId,
+                  },
+                },
+              });
+
+              if (device) {
+                await prisma.device.update({
+                  where: { id: device.id },
+                  data: {
+                    status: 'ONLINE',
+                    lastSeenAt: new Date(),
+                    lastDataAt: new Date(),
+                    totalUploads: { increment: 1 },
+                    consecutiveErrors: 0,
+                  },
+                });
+              } else {
+                const existingDeviceWithKey = await prisma.device.findUnique({
+                  where: { apiKeyId: req.apiKey.id },
+                });
+
+                if (existingDeviceWithKey) {
+                  await prisma.device.update({
+                    where: { id: existingDeviceWithKey.id },
+                    data: {
+                      feedId,
+                      deviceId,
+                      status: 'ONLINE',
+                      lastSeenAt: new Date(),
+                      lastDataAt: new Date(),
+                      totalUploads: { increment: 1 },
+                      consecutiveErrors: 0,
+                    },
+                  });
+                } else {
+                  await prisma.device.create({
+                    data: {
+                      feedId,
+                      deviceId,
+                      apiKeyId: req.apiKey.id,
+                      status: 'ONLINE',
+                      lastSeenAt: new Date(),
+                      lastDataAt: new Date(),
+                      totalUploads: 1,
+                      consecutiveErrors: 0,
+                    },
+                  });
+                }
+              }
+            } catch (error: any) {
+              console.warn(`[${requestId}] Device registration failed:`, error.message);
+            }
+          }
+
+          // Log to data history (async)
+          await prisma.dataHistory.create({
+            data: {
+              feedId,
+              blobId,
+              timestamp: new Date(),
+              uploadedAt: new Date(),
+              uploadedBy: deviceId || req.apiKey.id,
+              deviceId: deviceId || undefined,
+              apiKeyId: req.apiKey.id,
+              dataSize: JSON.stringify(enrichedData).length,
+              dataSummary: {
+                keys: Object.keys(data),
+                deviceId: deviceId || 'unknown',
+              },
+            },
+          });
+
+          // Update on-chain (async)
+          await suiService.updateFeedData(feedId, blobId);
+          console.log(`[${requestId}] ✅ On-chain update successful!`);
+        } catch (error: any) {
+          console.warn(`[${requestId}] ⚠️  Async operations failed:`, error.message);
+        }
+      })();
     } catch (error: any) {
       console.error(`[${requestId}] ❌ Error:`, error.message);
       

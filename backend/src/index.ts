@@ -12,6 +12,7 @@ import subscriberRouter from './routes/subscriber';
 import suiService from './services/sui.service';
 import walrusService from './services/walrus.service';
 import { optionalAuthenticateApiKey, AuthenticatedRequest } from './middleware/auth.middleware';
+import { disconnectPrisma } from './services/prisma.service';
 
 // Load environment variables
 dotenv.config();
@@ -122,20 +123,30 @@ wss.on('connection', (ws: WebSocket, req: any) => {
 
         // Try API key authentication first
         if (apiKey) {
-          const apiKeyService = (await import('./services/api-key.service')).default;
-          const validation = await apiKeyService.validateApiKey(apiKey);
-          
-          if (validation.valid && validation.apiKey && validation.apiKey.type === 'SUBSCRIBER') {
-            if (validation.apiKey.subscriptionId) {
-              const subscription = await suiService.getSubscription(validation.apiKey.subscriptionId);
-              if (subscription && subscription.feedId === feedId) {
-                hasAccess = await suiService.checkAccess(
-                  validation.apiKey.subscriptionId,
-                  validation.apiKey.consumerAddress || ''
-                );
-                apiKeyId = validation.apiKey.id;
+          try {
+            const apiKeyService = (await import('./services/api-key.service')).default;
+            const validation = await apiKeyService.validateApiKey(apiKey);
+            
+            if (validation.valid && validation.apiKey && validation.apiKey.type === 'SUBSCRIBER') {
+              if (validation.apiKey.subscriptionId) {
+                const subscription = await suiService.getSubscription(validation.apiKey.subscriptionId);
+                if (subscription && subscription.feedId === feedId) {
+                  hasAccess = await suiService.checkAccess(
+                    validation.apiKey.subscriptionId,
+                    validation.apiKey.consumerAddress || ''
+                  );
+                  apiKeyId = validation.apiKey.id;
+                }
               }
             }
+          } catch (dbError: any) {
+            // Handle database connection errors gracefully
+            console.error('Database error during API key validation:', dbError.message);
+            ws.send(JSON.stringify({
+              type: 'error',
+              error: 'Database connection error. Please try again later or contact support.'
+            }));
+            return;
           }
         }
 
@@ -183,9 +194,20 @@ wss.on('connection', (ws: WebSocket, req: any) => {
       }
     } catch (error: any) {
       console.error('WebSocket message error:', error);
+      
+      // Provide more helpful error messages
+      let errorMessage = error.message || 'Unknown error occurred';
+      
+      // Check for database connection errors
+      if (error.message && error.message.includes('Can\'t reach database server')) {
+        errorMessage = 'Database connection error. The service is temporarily unavailable. Please try again later.';
+      } else if (error.name === 'PrismaClientInitializationError') {
+        errorMessage = 'Database connection error. Please try again later or contact support.';
+      }
+      
       ws.send(JSON.stringify({
         type: 'error',
-        error: error.message
+        error: errorMessage
       }));
     }
   });
@@ -274,14 +296,41 @@ server.listen(port, '0.0.0.0', () => {
   console.log(`  WS     /ws`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
+// Graceful shutdown handler
+async function gracefulShutdown(signal: string) {
+  console.log(`${signal} received, shutting down gracefully...`);
+  
+  // Stop accepting new connections
   clearInterval(heartbeatInterval);
-  server.close(() => {
-    console.log('Server closed');
+  
+  // Close WebSocket connections
+  clients.forEach((client) => {
+    if (client.ws.readyState === WebSocket.OPEN) {
+      client.ws.close();
+    }
+  });
+  clients.clear();
+  
+  // Close HTTP server
+  server.close(async () => {
+    console.log('HTTP server closed');
+    
+    // Disconnect Prisma to release database connections
+    await disconnectPrisma();
+    
+    console.log('Graceful shutdown complete');
     process.exit(0);
   });
-});
+  
+  // Force shutdown after 10 seconds if graceful shutdown fails
+  setTimeout(() => {
+    console.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+}
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 export default app;

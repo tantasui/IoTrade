@@ -1,5 +1,5 @@
 import { SealClient } from '@mysten/seal';
-import { SuiClient, getFullnodeUrl } from '@mysten/sui.js/client';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import * as dotenv from 'dotenv';
 
 dotenv.config();

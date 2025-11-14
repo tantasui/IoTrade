@@ -10,7 +10,17 @@ const getTreasuryId = () => process.env.NEXT_PUBLIC_SUI_TREASURY_ID || '';
 export function useSuiWallet() {
   const account = useCurrentAccount();
   const client = useSuiClient();
-  const { mutateAsync: signAndExecuteTransaction } = useSignAndExecuteTransaction();
+  const { mutateAsync: signAndExecuteTransaction } = useSignAndExecuteTransaction({
+    execute: async ({ bytes, signature }) =>
+      await client.executeTransactionBlock({
+        transactionBlock: bytes,
+        signature,
+        options: {
+          showObjectChanges: true,
+          showEffects: true,
+        },
+      }),
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,8 +89,7 @@ export function useSuiWallet() {
       });
 
       const result = await signAndExecuteTransaction({
-        transaction: tx,
-        options: { showObjectChanges: true, showEffects: true },
+        transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
       });
 
       console.log('[subscribe] Transaction result:', {
@@ -174,8 +183,7 @@ export function useSuiWallet() {
       });
 
       const result = await signAndExecuteTransaction({
-        transaction: tx,
-        options: { showObjectChanges: true, showEffects: true },
+        transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
       });
 
       console.log('[registerFeed] Transaction result:', {
@@ -251,19 +259,38 @@ export function useSuiWallet() {
       });
 
       const result = await signAndExecuteTransaction({
-        transaction: tx,
-        options: { showEffects: true },
+        transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
+      });
+
+      console.log('[updateFeedData] Transaction result:', {
+        digest: result.digest,
+        effects: result.effects,
+      });
+
+      // Wait for transaction to be finalized
+      const { effects } = await client.waitForTransaction({
+        digest: result.digest,
+        options: {
+          showEffects: true,
+        },
       });
 
       setIsLoading(false);
-      return result.effects?.status.status === 'success';
+      
+      // Check if transaction was successful
+      if (effects?.status?.status === 'success') {
+        console.log('[updateFeedData] Feed updated successfully');
+        return true;
+      } else {
+        throw new Error('Transaction failed');
+      }
     } catch (err: any) {
       console.error('Error updating feed:', err);
       setError(err.message);
       setIsLoading(false);
       throw err;
     }
-  }, [address, signAndExecuteTransaction]);
+  }, [address, signAndExecuteTransaction, client]);
 
   // Transfer feed "ownership" to another provider
   // Note: Feed remains shared, but provider field is updated
@@ -291,8 +318,7 @@ export function useSuiWallet() {
       });
 
       const result = await signAndExecuteTransaction({
-        transaction: tx,
-        options: { showEffects: true },
+        transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
       });
 
       setIsLoading(false);
@@ -332,8 +358,7 @@ export function useSuiWallet() {
       });
 
       const result = await signAndExecuteTransaction({
-        transaction: tx,
-        options: { showEffects: true },
+        transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
       });
 
       setIsLoading(false);
