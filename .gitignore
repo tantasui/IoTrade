@@ -58,5 +58,6 @@ deployed-objects.json
 private_key_*
  
 iot_marketplace/build/
+examples/
 
   

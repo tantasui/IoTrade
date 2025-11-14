@@ -107,6 +107,12 @@ npm run dev
 
 Frontend will be available at `http://localhost:3000`
 
+## 📋 Deployed Contracts
+
+- **Package ID**: `0xea35b8166a92fafa4ffabe287f432487c55be85c125427f9a36d593982508ac9`
+
+> **Note**: If you're deploying your own contracts, follow the Quick Start guide above. Otherwise, you can use the deployed package ID above for testing with the live applications.
+
 ## 📖 Usage Guide
 
 ### For Data Providers
@@ -272,10 +278,7 @@ data-marketplace-/
 │   ├── subscriber-example.js      # JavaScript subscriber example
 │   ├── subscriber-example.py     # Python subscriber example
 │   └── README.md
-├── examples/              # Additional example code
-│   ├── frontend/          # Frontend examples
-│   ├── move/              # Move contract examples
-│   └── README.md
+
 ├── wokwi/                 # Wokwi simulator integration
 │   ├── sketch.ino         # Arduino sketch for Wokwi
 │   ├── sketch_http.ino    # HTTP version
