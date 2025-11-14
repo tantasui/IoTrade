@@ -1,6 +1,6 @@
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 
 // Get environment variables
 const getPackageId = () => process.env.NEXT_PUBLIC_SUI_PACKAGE_ID || '';
@@ -10,16 +10,86 @@ const getTreasuryId = () => process.env.NEXT_PUBLIC_SUI_TREASURY_ID || '';
 export function useSuiWallet() {
   const account = useCurrentAccount();
   const client = useSuiClient();
+  // Store the last transaction response to access it even if dapp-kit throws
+  const lastTransactionResponse = useRef<any>(null);
+
   const { mutateAsync: signAndExecuteTransaction } = useSignAndExecuteTransaction({
-    execute: async ({ bytes, signature }) =>
-      await client.executeTransactionBlock({
-        transactionBlock: bytes,
-        signature,
-        options: {
-          showObjectChanges: true,
-          showEffects: true,
-        },
-      }),
+    execute: async ({ bytes, signature }) => {
+      console.log('[useSuiWallet] execute: Starting transaction execution');
+      try {
+        const response = await client.executeTransactionBlock({
+          transactionBlock: bytes,
+          signature,
+          options: {
+            showObjectChanges: true,
+            showRawEffects: true,
+            showEffects: true,
+          },
+        });
+        console.log('[useSuiWallet] execute: Transaction executed successfully');
+        console.log('[useSuiWallet] execute: Response type:', typeof response);
+        console.log('[useSuiWallet] execute: Response keys:', Object.keys(response || {}));
+        console.log('[useSuiWallet] execute: Full response:', response);
+        console.log('[useSuiWallet] execute: Response JSON:', JSON.stringify(response, null, 2));
+        // Store response before returning (in case dapp-kit throws)
+        lastTransactionResponse.current = response;
+        return response;
+      } catch (error: any) {
+        console.error('[useSuiWallet] execute: Error caught:', error);
+        console.error('[useSuiWallet] execute: Error message:', error.message);
+        console.error('[useSuiWallet] execute: Error stack:', error.stack);
+        console.error('[useSuiWallet] execute: Error object:', error);
+        console.error('[useSuiWallet] execute: Error JSON:', JSON.stringify(error, null, 2));
+        
+        // Check if error has response data we can use
+        if (error.response || error.data || error.digest) {
+          console.log('[useSuiWallet] execute: Error has response/data/digest:', {
+            response: error.response,
+            data: error.data,
+            digest: error.digest,
+          });
+        }
+        
+        // If effects parsing fails, try without showEffects
+        if (error.message?.includes('parse effects') || error.message?.includes('Could not parse')) {
+          console.warn('[useSuiWallet] Effects parsing failed, retrying without showEffects');
+          try {
+            const retryResponse = await client.executeTransactionBlock({
+              transactionBlock: bytes,
+              signature,
+              options: {
+                showObjectChanges: true,
+                showRawEffects: true,
+                showEffects: false,
+              },
+            });
+            console.log('[useSuiWallet] execute: Retry successful without showEffects');
+            console.log('[useSuiWallet] execute: Retry response:', retryResponse);
+            return retryResponse;
+          } catch (retryError: any) {
+            console.error('[useSuiWallet] execute: Retry also failed:', retryError);
+            // If that also fails, try with minimal options
+            console.warn('[useSuiWallet] Retry failed, trying with minimal options');
+            try {
+              const minimalResponse = await client.executeTransactionBlock({
+                transactionBlock: bytes,
+                signature,
+                options: {
+                  showObjectChanges: true,
+                },
+              });
+              console.log('[useSuiWallet] execute: Minimal options successful');
+              return minimalResponse;
+            } catch (minimalError: any) {
+              console.error('[useSuiWallet] execute: All retries failed');
+              // Re-throw the original error with more context
+              throw error;
+            }
+          }
+        }
+        throw error;
+      }
+    },
   });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,50 +252,247 @@ export function useSuiWallet() {
         ],
       });
 
-      const result = await signAndExecuteTransaction({
-        transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
-      });
+      let result;
+      try {
+        result = await signAndExecuteTransaction({
+          transaction: tx as any, // Type assertion to handle version mismatch between @mysten/sui and @mysten/dapp-kit
+        });
+      } catch (executeError: any) {
+        // If dapp-kit threw an error but we have the stored response, use it
+        if (lastTransactionResponse.current && (executeError.message?.includes('parse effects') || executeError.message?.includes('Could not parse'))) {
+          console.log('[registerFeed] dapp-kit parsing error, but transaction succeeded. Using stored response.');
+          result = lastTransactionResponse.current;
+          lastTransactionResponse.current = null; // Clear after use
+        } else {
+          console.error('=== [registerFeed] TRANSACTION EXECUTION ERROR ===');
+          console.error('[registerFeed] Error object:', executeError);
+          console.error('[registerFeed] Error type:', typeof executeError);
+          console.error('[registerFeed] Error constructor:', executeError?.constructor?.name);
+          console.error('[registerFeed] Error keys:', Object.keys(executeError || {}));
+          console.error('[registerFeed] Error message:', executeError?.message);
+          console.error('[registerFeed] Error stack:', executeError?.stack);
+          
+          // Try to get all properties (including non-enumerable)
+          const allProps: any = {};
+          for (const key in executeError) {
+            allProps[key] = executeError[key];
+          }
+          console.error('[registerFeed] All error properties:', allProps);
+          
+          // Try JSON.stringify with replacer to get all properties
+          try {
+            const errorJson = JSON.stringify(executeError, (key, value) => {
+              if (key === 'stack') return undefined; // Skip stack for readability
+              return value;
+            }, 2);
+            console.error('[registerFeed] Error JSON:', errorJson);
+          } catch (jsonError) {
+            console.error('[registerFeed] Could not stringify error:', jsonError);
+          }
+          
+          // Check nested properties
+          console.error('[registerFeed] Checking nested properties:', {
+            digest: executeError?.digest,
+            response: executeError?.response,
+            data: executeError?.data,
+            cause: executeError?.cause,
+            error: executeError?.error,
+            result: executeError?.result,
+            transactionDigest: executeError?.transactionDigest,
+          });
+          
+          // If the error is about parsing effects, the transaction might have succeeded
+          // Try to extract digest from error or response
+          if (executeError.message?.includes('parse effects') || executeError.message?.includes('Could not parse')) {
+            console.log('[registerFeed] Parsing error detected, attempting to extract digest...');
+            
+            // Try multiple ways to extract digest
+            const errorDigest = 
+              executeError.digest || 
+              executeError.response?.digest || 
+              executeError.data?.digest ||
+              executeError.cause?.digest ||
+              executeError.error?.digest ||
+              executeError.result?.digest ||
+              executeError.transactionDigest ||
+              (executeError.response?.data && (executeError.response.data.digest || executeError.response.data.result?.digest));
+            
+            console.log('[registerFeed] Extracted digest:', errorDigest);
+            
+            if (errorDigest) {
+              console.log('[registerFeed] Found digest in error, attempting to fetch transaction result:', errorDigest);
+              // Try to get result using waitForTransaction
+              try {
+                const txResult = await client.waitForTransaction({
+                  digest: errorDigest,
+                  options: {
+                    showEffects: true,
+                    showObjectChanges: true,
+                  },
+                });
+                // Use txResult as if it were the result (avoid duplicate digest)
+                const { digest: _, ...txResultWithoutDigest } = txResult;
+                result = { digest: errorDigest, ...txResultWithoutDigest };
+                console.log('[registerFeed] Successfully retrieved transaction result using digest');
+              } catch (waitError: any) {
+                console.error('[registerFeed] Failed to retrieve transaction:', waitError);
+                throw new Error(`Transaction may have succeeded but we couldn't retrieve the result. Digest: ${errorDigest}. Please check on Sui Explorer.`);
+              }
+            } else {
+              console.warn('[registerFeed] No digest found in error object');
+              throw new Error(`Transaction execution failed: ${executeError.message}. The transaction may have succeeded - please check Sui Explorer or your wallet for the transaction digest.`);
+            }
+          } else {
+            throw executeError;
+          }
+          console.error('=== END ERROR LOGGING ===');
+        }
+      }
 
-      console.log('[registerFeed] Transaction result:', {
-        digest: result.digest,
-        objectChanges: result.objectChanges,
-        effectsCreated: result.effects?.created,
-      });
+      // Comprehensive logging of transaction result for debugging
+      console.log('=== [registerFeed] FULL TRANSACTION RESULT ===');
+      console.log('Full result object:', result);
+      console.log('Result keys:', Object.keys(result));
+      console.log('Digest:', result.digest);
+      console.log('ObjectChanges:', result.objectChanges);
+      console.log('ObjectChanges type:', typeof result.objectChanges);
+      console.log('ObjectChanges length:', result.objectChanges?.length);
+      console.log('Effects:', result.effects);
+      console.log('Effects.created:', result.effects?.created);
+      console.log('Effects.created type:', typeof result.effects?.created);
+      console.log('Effects.created length:', result.effects?.created?.length);
+      console.log('Full result JSON:', JSON.stringify(result, null, 2));
+      console.log('=== END TRANSACTION RESULT ===');
 
-      // Wait for transaction to be finalized (like the example)
-      const { effects } = await client.waitForTransaction({
-        digest: result.digest,
-        options: {
-          showEffects: true,
-        },
-      });
+      // First, try objectChanges (most reliable for shared objects)
+      if (result.objectChanges && Array.isArray(result.objectChanges) && result.objectChanges.length > 0) {
+        console.log('[registerFeed] Processing objectChanges from result:', result.objectChanges.length, 'items');
+        console.log('[registerFeed] All objectChanges:', result.objectChanges);
+        const createdObjects = result.objectChanges.filter((change: any) => change.type === 'created') as any[];
+        console.log('[registerFeed] Created objects from objectChanges:', createdObjects);
+        if (createdObjects && createdObjects.length > 0) {
+          // Look for DataFeed in created objects
+          const feedObject = createdObjects.find((obj: any) =>
+            obj.objectType?.includes('DataFeed') || obj.objectType?.includes('data_marketplace::DataFeed')
+          );
+          console.log('[registerFeed] Feed object from objectChanges:', feedObject);
+          if (feedObject && feedObject.objectId) {
+            console.log('[registerFeed] Found feed in objectChanges:', feedObject.objectId);
+            setIsLoading(false);
+            return feedObject.objectId as string;
+          }
+          // If no DataFeed found, try the first created object (might be the feed)
+          const firstCreated = createdObjects[0];
+          console.log('[registerFeed] First created object from objectChanges:', firstCreated);
+          if (firstCreated && firstCreated.objectId) {
+            console.log('[registerFeed] Found feed (first created object):', firstCreated.objectId);
+            setIsLoading(false);
+            return firstCreated.objectId as string;
+          }
+        }
+      } else {
+        console.log('[registerFeed] No objectChanges found in result');
+      }
 
-      // For owned objects, check effects.created
-      if (effects?.created && effects.created.length > 0) {
-        // Get the first created object - should be the DataFeed
-        const firstCreated = effects.created[0];
-        if (firstCreated.reference?.objectId) {
-          console.log('[registerFeed] Found feed in effects.created:', firstCreated.reference.objectId);
+      // Also check effects.created for shared objects
+      if (result.effects?.created && Array.isArray(result.effects.created) && result.effects.created.length > 0) {
+        console.log('[registerFeed] Processing effects.created:', result.effects.created.length, 'items');
+        console.log('[registerFeed] effects.created items:', result.effects.created);
+        // Look for shared objects (DataFeed is shared)
+        const sharedObject = result.effects.created.find(
+          (item: any) => item.owner && typeof item.owner === 'object' && 'Shared' in item.owner
+        );
+        console.log('[registerFeed] Shared object found in effects.created:', sharedObject);
+        if (sharedObject?.reference?.objectId) {
+          console.log('[registerFeed] Found feed in effects.created (shared):', sharedObject.reference.objectId);
+          setIsLoading(false);
+          return sharedObject.reference.objectId;
+        }
+        // Fallback to first created
+        const firstCreated = result.effects.created[0];
+        console.log('[registerFeed] First created in effects:', firstCreated);
+        if (firstCreated?.reference?.objectId) {
+          console.log('[registerFeed] Found feed in effects.created (first):', firstCreated.reference.objectId);
           setIsLoading(false);
           return firstCreated.reference.objectId;
         }
       }
 
-      // Fallback: Try objectChanges from original result
-      const createdObjects = result.objectChanges?.filter((change: any) => change.type === 'created');
-      if (createdObjects && createdObjects.length > 0) {
-        const feedObject = createdObjects.find((obj: any) =>
-          obj.objectType?.includes('DataFeed')
-        );
-        if (feedObject && 'objectId' in feedObject) {
-          console.log('[registerFeed] Found feed in objectChanges:', feedObject.objectId);
-          setIsLoading(false);
-          return feedObject.objectId;
+      // Fallback: Try to get from waitForTransaction with objectChanges
+      try {
+        const txResult = await client.waitForTransaction({
+          digest: result.digest,
+          options: {
+            showEffects: true,
+            showObjectChanges: true,
+          },
+        });
+
+        // Log waitForTransaction result for debugging
+        console.log('=== [registerFeed] waitForTransaction RESULT ===');
+        console.log('Full txResult:', txResult);
+        console.log('txResult keys:', Object.keys(txResult));
+        console.log('txResult.objectChanges:', txResult.objectChanges);
+        console.log('txResult.effects:', txResult.effects);
+        console.log('txResult JSON:', JSON.stringify(txResult, null, 2));
+        console.log('=== END waitForTransaction RESULT ===');
+
+        // Check objectChanges from waitForTransaction
+        if (txResult.objectChanges && txResult.objectChanges.length > 0) {
+          console.log('[registerFeed] Processing objectChanges from waitForTransaction:', txResult.objectChanges.length, 'items');
+          const createdObjects = txResult.objectChanges.filter((change: any) => change.type === 'created');
+          console.log('[registerFeed] Created objects:', createdObjects);
+          if (createdObjects && createdObjects.length > 0) {
+            const feedObject = createdObjects.find((obj: any) =>
+              obj.objectType?.includes('DataFeed')
+            );
+            console.log('[registerFeed] Feed object found:', feedObject);
+            if (feedObject && 'objectId' in feedObject) {
+              console.log('[registerFeed] Found feed in waitForTransaction objectChanges:', feedObject.objectId);
+              setIsLoading(false);
+              return feedObject.objectId;
+            }
+            // Try first created object
+            const firstCreated = createdObjects[0];
+            console.log('[registerFeed] First created object:', firstCreated);
+            if (firstCreated && 'objectId' in firstCreated) {
+              console.log('[registerFeed] Found feed (first created from waitForTransaction):', firstCreated.objectId);
+              setIsLoading(false);
+              return firstCreated.objectId;
+            }
+          }
         }
+
+        // Check effects.created for shared objects
+        if (txResult.effects?.created && txResult.effects.created.length > 0) {
+          console.log('[registerFeed] Processing effects.created:', txResult.effects.created.length, 'items');
+          console.log('[registerFeed] effects.created items:', txResult.effects.created);
+          // Look for shared objects (DataFeed is shared)
+          const sharedObject = txResult.effects.created.find(
+            (item: any) => item.owner && typeof item.owner === 'object' && 'Shared' in item.owner
+          );
+          console.log('[registerFeed] Shared object found:', sharedObject);
+          if (sharedObject?.reference?.objectId) {
+            console.log('[registerFeed] Found feed in effects.created (shared):', sharedObject.reference.objectId);
+            setIsLoading(false);
+            return sharedObject.reference.objectId;
+          }
+          // Fallback to first created
+          const firstCreated = txResult.effects.created[0];
+          console.log('[registerFeed] First created in effects:', firstCreated);
+          if (firstCreated?.reference?.objectId) {
+            console.log('[registerFeed] Found feed in effects.created (first):', firstCreated.reference.objectId);
+            setIsLoading(false);
+            return firstCreated.reference.objectId;
+          }
+        }
+      } catch (waitError: any) {
+        console.warn('[registerFeed] waitForTransaction failed:', waitError.message);
+        // Continue to error handling below
       }
 
       console.error('[registerFeed] Failed to extract feed ID. Full result:', JSON.stringify(result, null, 2));
-      throw new Error('Failed to extract feed ID from transaction result');
+      throw new Error('Failed to extract feed ID from transaction result. Check console for details.');
     } catch (err: any) {
       console.error('Error registering feed:', err);
       setError(err.message);

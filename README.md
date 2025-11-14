@@ -51,7 +51,7 @@ cd data-marketplace-
 ### 2. Deploy Smart Contracts
 
 ```bash
-cd contracts
+cd iot_marketplace
 sui client publish --gas-budget 100000000
 ```
 
@@ -134,32 +134,89 @@ Frontend will be available at `http://localhost:3000`
 5. **Subscribe**: Click "Subscribe" and approve the transaction in your wallet
 6. **Access Data**: Your subscription ID will be displayed - use it to access data via API
 
-## 🎯 Sample Data Feeds
+## 🔌 API Structure
 
-The demo includes 5 pre-configured feeds:
+The IoT Data Marketplace provides a REST API and WebSocket API for programmatic access to data feeds.
 
-1. **SF Weather Station** (Free)
-   - Temperature, humidity, pressure, wind
-   - Updates every 5 minutes
+### Base URL
+- **Development**: `http://localhost:3001`
+- **Production**: `https://io-trade.vercel.app`
 
-2. **Downtown Traffic Camera** (Premium - 1 SUI/month)
-   - Vehicle counts, speeds, congestion
-   - Updates every minute
-   - Seal encrypted
+### REST API Endpoints
 
-3. **Air Quality Monitor** (Premium - 0.5 SUI/month)
-   - PM2.5, PM10, CO2, AQI
-   - Updates every 10 minutes
-   - Seal encrypted
+#### Health & Info
+- `GET /health` - Health check endpoint
+- `GET /` - API information and available endpoints
 
-4. **Shopping District Parking** (0.2 SUI/month)
-   - 250 spots availability
-   - Real-time occupancy rates
-   - Updates every 5 minutes
+#### Feeds
+- `GET /api/feeds` - List all feeds (with optional filters: category, isPremium, minPrice, maxPrice, location)
+- `GET /api/feeds/:feedId` - Get specific feed details
+- `POST /api/feeds` - Create a new feed (requires wallet)
+- `PUT /api/feeds/:feedId/data` - Update feed data
+- `POST /api/feeds/:feedId/rating` - Submit a rating for a feed
 
-5. **Oakland Weather Station** (0.1 SUI/month)
-   - Weather data for Oakland
-   - Updates every 5 minutes
+#### Subscriptions
+- `POST /api/subscribe/:feedId` - Subscribe to a feed
+- `GET /api/subscriptions/:subscriptionId` - Get subscription details
+- `POST /api/subscriptions/:subscriptionId/verify` - Verify access to a feed
+
+#### Data Access
+- `GET /api/data/:feedId` - Get feed data (requires subscription or preview mode)
+- `GET /api/data/:feedId/history` - Get historical data points
+- `POST /api/data/upload` - Upload data to Walrus storage
+
+### WebSocket API
+
+Real-time data streaming via WebSocket:
+
+- **Endpoint**: `ws://localhost:3001/ws` (development) or `wss://io-trade.vercel.app/ws` (production)
+
+**Message Types:**
+- `subscribe` - Subscribe to a feed
+- `unsubscribe` - Unsubscribe from current feed
+- `data` - Receive data updates
+- `error` - Error messages
+
+**Example:**
+```json
+{
+  "type": "subscribe",
+  "feedId": "0x...",
+  "subscriptionId": "0x...",
+  "consumer": "0x..."
+}
+```
+
+### Authentication
+
+Most endpoints require:
+- **Wallet Address**: Sui wallet address for on-chain operations
+- **Subscription ID**: Valid subscription ID for data access
+- **API Key** (optional): For programmatic access without wallet
+
+### Response Format
+
+All API responses follow this structure:
+
+**Success:**
+```json
+{
+  "success": true,
+  "data": { ... }
+}
+```
+
+**Error:**
+```json
+{
+  "success": false,
+  "error": "Error message"
+}
+```
+
+### Full API Documentation
+
+For complete API documentation with detailed request/response examples, see [API.md](./API.md).
 
 ## 🛠️ Technology Stack
 
@@ -176,11 +233,14 @@ The demo includes 5 pre-configured feeds:
 
 ```
 data-marketplace-/
-├── contracts/              # Sui Move smart contracts
+├── iot_marketplace/       # Sui Move smart contracts
 │   ├── sources/
-│   │   ├── data_marketplace.move
-│   │   ├── subscription.move
-│   │   └── reputation.move
+│   │   ├── iot_marketplace.move    # Main marketplace contract
+│   │   ├── subscription.move       # Subscription handling
+│   │   ├── reputation.move         # Rating and reputation system
+│   │   └── seal_access.move        # Seal encryption access control
+│   ├── tests/            # Move contract tests
+│   ├── build/            # Compiled contracts
 │   └── Move.toml
 ├── backend/               # Node.js API server
 │   ├── src/
@@ -189,15 +249,41 @@ data-marketplace-/
 │   │   ├── types/        # TypeScript types
 │   │   ├── utils/        # Utilities
 │   │   └── index.ts      # Server entry point
+│   ├── prisma/           # Database schema and migrations
+│   ├── setup-koyeb-db.sh # Database setup script
 │   └── package.json
-└── frontend/              # Next.js web app
-    ├── src/
-    │   ├── pages/        # Next.js pages
-    │   ├── components/   # React components
-    │   ├── hooks/        # Custom hooks
-    │   ├── lib/          # API client
-    │   └── styles/       # CSS
-    └── package.json
+├── frontend/              # Next.js web app
+│   ├── src/
+│   │   ├── pages/        # Next.js pages
+│   │   ├── components/   # React components
+│   │   ├── hooks/        # Custom hooks (useSuiWallet, etc.)
+│   │   ├── lib/          # API client and utilities
+│   │   └── styles/       # CSS
+│   └── package.json
+├── subscriber-viewer/     # Standalone WebSocket data viewer
+│   ├── index.html         # UI for viewing data
+│   ├── websocket-client.js # WebSocket connection handler
+│   ├── data-renderer.js   # Data visualization and rendering
+│   └── README.md
+├── example/               # IoT device and provider examples
+│   ├── provider-iot-device.ino    # Arduino example
+│   ├── provider-monitor.ts        # TypeScript provider example
+│   ├── subscriber-example.ts      # TypeScript subscriber example
+│   ├── subscriber-example.js      # JavaScript subscriber example
+│   ├── subscriber-example.py     # Python subscriber example
+│   └── README.md
+├── examples/              # Additional example code
+│   ├── frontend/          # Frontend examples
+│   ├── move/              # Move contract examples
+│   └── README.md
+├── wokwi/                 # Wokwi simulator integration
+│   ├── sketch.ino         # Arduino sketch for Wokwi
+│   ├── sketch_http.ino    # HTTP version
+│   ├── diagram.json       # Circuit diagram
+│   └── README.md
+├── API.md                 # API documentation
+├── SEAL_INTEGRATION_PLAN.md  # Seal encryption integration docs
+└── README.md              # This file
 ```
 
 ## 🏆 Built for Sui Hackathon 2024
@@ -248,9 +334,17 @@ data-marketplace-/
 - **CDN Integration**: Content delivery network for faster data access globally
 - **Load Balancing**: Distributed backend infrastructure for high availability
 
-## 📄 License
+## 🔗 Live Demo & Resources
 
-MIT
+### Presentation
+- [Project Presentation Slides](https://docs.google.com/presentation/d/1vvGmz0bMcDphmjvYBbQLjcUka5LUnJ47LJ9p8qgWUCQ/edit?usp=sharing)
+
+### Live Applications
+- **Backend API**: [https://io-trade.vercel.app/](https://io-trade.vercel.app/)
+- **Frontend**: [https://io-trade-h8tj.vercel.app/](https://io-trade-h8tj.vercel.app/)
+- **Subscriber Viewer**: [https://io-trade-28o6.vercel.app/](https://io-trade-28o6.vercel.app/)
+
+
 
 ---
 

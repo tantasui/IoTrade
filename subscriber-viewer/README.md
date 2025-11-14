@@ -17,7 +17,7 @@ A real-time WebSocket client for monitoring data feeds from the Data Marketplace
    - For best results, use a local server: `python -m http.server 8000` or `npx serve`
 
 2. **Configure Connection**
-   - **WebSocket URL**: Your backend WebSocket endpoint (default: `wss://io-trade.vercel.app/ws`)
+   - **WebSocket URL**: Your backend WebSocket endpoint (default: `ws://localhost:3001/ws`)
    - **Feed ID**: The feed ID you want to subscribe to (pre-filled with your feed)
    - **Subscriber API Key**: Your `sk_xxx` subscriber API key
 
@@ -55,9 +55,9 @@ A real-time WebSocket client for monitoring data feeds from the Data Marketplace
 ## Notes
 
 - The feed ID is pre-configured to: `0xdecee9d21c031b9253a0e96b819729e5684cacd6620a0b6346e22621553d2936`
-- Make sure your backend WebSocket server is running
-- The WebSocket URL defaults to `wss://io-trade.vercel.app/ws` (deployed backend)
-- For local development, change it to `ws://localhost:3001/ws`
+- Make sure your backend WebSocket server is running on `localhost:3001`
+- The WebSocket URL defaults to `ws://localhost:3001/ws` for local development
+- For production, change it to `wss://your-backend-domain.com/ws`
 - Data is limited to the last 50 messages to prevent memory issues
 
 
