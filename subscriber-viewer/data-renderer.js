@@ -99,17 +99,22 @@ class DataRenderer {
             } else if (info.type === 'array') {
                 html += `<span class="structure-type">array[${info.length}]</span> of <span class="structure-type">${info.itemType}</span>`;
                 if (info.sample) {
-                    html += '<div style="margin-left: 20px; color: #666;">';
+                    html += '<div style="margin-left: 20px; color: #6b7280;">';
                     html += `Sample: ${JSON.stringify(info.sample)}`;
                     html += '</div>';
                 }
             } else {
                 html += `<span class="structure-type">${info.type}</span>`;
                 if (info.value !== undefined) {
-                    html += ` = <span class="structure-value">${JSON.stringify(info.value)}</span>`;
+                    const valueType = typeof info.value;
+                    let valueClass = 'structure-value';
+                    if (valueType === 'string') valueClass = 'structure-string';
+                    else if (valueType === 'number') valueClass = 'structure-number';
+                    else if (valueType === 'boolean') valueClass = 'structure-boolean';
+                    html += ` = <span class="${valueClass}">${JSON.stringify(info.value)}</span>`;
                 }
                 if (info.unit) {
-                    html += ` <span style="color: #999;">(${info.unit})</span>`;
+                    html += ` <span style="color: #6b7280;">(${info.unit})</span>`;
                 }
             }
             
@@ -152,48 +157,48 @@ class DataRenderer {
     }
 
     /**
-     * Format data for display
+     * Format data for display with terminal-themed syntax highlighting
      */
     formatData(data, indent = 0) {
         if (data === null) {
-            return '<span style="color: #999;">null</span>';
+            return '<span style="color: #6b7280;">null</span>';
         }
 
         if (typeof data === 'string') {
-            return '<span style="color: #56c214;">"' + this.escapeHtml(data) + '"</span>';
+            return '<span class="structure-string">"' + this.escapeHtml(data) + '"</span>';
         }
 
         if (typeof data === 'number') {
-            return '<span style="color: #667eea; font-weight: 600;">' + data + '</span>';
+            return '<span class="structure-number">' + data + '</span>';
         }
 
         if (typeof data === 'boolean') {
-            return '<span style="color: #764ba2;">' + data + '</span>';
+            return '<span class="structure-boolean">' + data + '</span>';
         }
 
         if (Array.isArray(data)) {
-            let html = '<span style="color: #999;">[</span><br>';
+            let html = '<span style="color: #6b7280;">[</span><br>';
             data.forEach((item, i) => {
                 html += '&nbsp;'.repeat((indent + 1) * 2);
                 html += this.formatData(item, indent + 1);
                 if (i < data.length - 1) html += ',';
                 html += '<br>';
             });
-            html += '&nbsp;'.repeat(indent * 2) + '<span style="color: #999;">]</span>';
+            html += '&nbsp;'.repeat(indent * 2) + '<span style="color: #6b7280;">]</span>';
             return html;
         }
 
         if (typeof data === 'object') {
-            let html = '<span style="color: #999;">{</span><br>';
+            let html = '<span style="color: #6b7280;">{</span><br>';
             const entries = Object.entries(data);
             entries.forEach(([key, value], i) => {
                 html += '&nbsp;'.repeat((indent + 1) * 2);
-                html += '<span style="color: #667eea; font-weight: 600;">"' + this.escapeHtml(key) + '"</span>: ';
+                html += '<span class="structure-key">"' + this.escapeHtml(key) + '"</span>: ';
                 html += this.formatData(value, indent + 1);
                 if (i < entries.length - 1) html += ',';
                 html += '<br>';
             });
-            html += '&nbsp;'.repeat(indent * 2) + '<span style="color: #999;">}</span>';
+            html += '&nbsp;'.repeat(indent * 2) + '<span style="color: #6b7280;">}</span>';
             return html;
         }
 
