@@ -27,6 +27,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@mysten/seal": "^0.9.3",
     "@mysten/sui": "^1.44.0",
     "@mysten/sui.js": "^0.54.1",
     "@prisma/client": "^6.19.0",

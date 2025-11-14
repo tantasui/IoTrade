@@ -98,15 +98,32 @@ class ApiKeyService {
     const keyHash = this.hashKey(key);
     const keyPrefix = this.getKeyPrefix(key);
 
-    const apiKey = await prisma.apiKey.findUnique({
-      where: { keyHash },
-      include: {
-        usageLogs: {
-          take: 1,
-          orderBy: { timestamp: 'desc' },
-        },
-      },
-    });
+    // Add retry logic for database queries
+    let apiKey;
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        apiKey = await prisma.apiKey.findUnique({
+          where: { keyHash },
+          include: {
+            usageLogs: {
+              take: 1,
+              orderBy: { timestamp: 'desc' },
+            },
+          },
+        });
+        break; // Success, exit retry loop
+      } catch (error: any) {
+        retries--;
+        if (retries === 0) {
+          // Last retry failed, throw the error
+          throw error;
+        }
+        // Wait before retrying (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, 1000 * (3 - retries)));
+        console.warn(`[ApiKeyService] Database query failed, retrying... (${retries} attempts left)`);
+      }
+    }
 
     if (!apiKey) {
       return { valid: false, error: 'Invalid API key' };

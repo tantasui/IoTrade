@@ -1,6 +1,6 @@
-import { SuiClient, getFullnodeUrl } from '@mysten/sui.js/client';
-import { TransactionBlock } from '@mysten/sui.js/transactions';
-import { Ed25519Keypair } from '@mysten/sui.js/keypairs/ed25519';
+import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { Transaction } from '@mysten/sui/transactions';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { fromHEX } from '@mysten/sui/utils';
 import { DataFeedMetadata, DataFeed, Subscription } from '../types';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
@@ -74,7 +74,7 @@ export class SuiService {
         throw new Error('SUI_PACKAGE_ID not configured. Set it in environment.');
       }
 
-      const tx = new TransactionBlock();
+      const tx = new Transaction();
 
       // Get the registry object (you'll need to get this from on-chain)
       const registryId = await this.getRegistryId();
@@ -95,8 +95,8 @@ export class SuiService {
         ],
       });
 
-      const result = await this.client.signAndExecuteTransactionBlock({
-        transactionBlock: tx,
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
         signer: this.keypair,
         options: {
           showEffects: true,
@@ -106,7 +106,7 @@ export class SuiService {
 
       // Extract the created feed ID from object changes
       const createdObjects = result.objectChanges?.filter(
-        (change) => change.type === 'created'
+        (change: any) => change.type === 'created'
       );
 
       if (createdObjects && createdObjects.length > 0) {
@@ -138,7 +138,7 @@ export class SuiService {
         throw new Error('Keypair not initialized');
       }
 
-      const tx = new TransactionBlock();
+      const tx = new Transaction();
 
       tx.moveCall({
         target: `${this.packageId}::data_marketplace::update_feed_data`,
@@ -148,8 +148,8 @@ export class SuiService {
         ],
       });
 
-      const result = await this.client.signAndExecuteTransactionBlock({
-        transactionBlock: tx,
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
         signer: this.keypair,
       });
 
@@ -175,7 +175,7 @@ export class SuiService {
         throw new Error('Keypair not initialized');
       }
 
-      const tx = new TransactionBlock();
+      const tx = new Transaction();
 
       // Get necessary objects
       const registryId = await this.getRegistryId();
@@ -195,8 +195,8 @@ export class SuiService {
         ],
       });
 
-      const result = await this.client.signAndExecuteTransactionBlock({
-        transactionBlock: tx,
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
         signer: this.keypair,
         options: {
           showEffects: true,
@@ -207,7 +207,7 @@ export class SuiService {
 
       // Extract subscription ID
       const createdObjects = result.objectChanges?.filter(
-        (change) => change.type === 'created'
+        (change: any) => change.type === 'created'
       );
 
       if (createdObjects && createdObjects.length > 0) {
@@ -500,7 +500,7 @@ export class SuiService {
         throw new Error('Keypair not initialized');
       }
 
-      const tx = new TransactionBlock();
+      const tx = new Transaction();
 
       tx.moveCall({
         target: `${this.packageId}::reputation::submit_rating`,
@@ -511,8 +511,8 @@ export class SuiService {
         ],
       });
 
-      const result = await this.client.signAndExecuteTransactionBlock({
-        transactionBlock: tx,
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
         signer: this.keypair,
         options: {
           showEffects: true,
@@ -521,7 +521,7 @@ export class SuiService {
       });
 
       const createdObjects = result.objectChanges?.filter(
-        (change) => change.type === 'created'
+        (change: any) => change.type === 'created'
       );
 
       if (createdObjects && createdObjects.length > 0) {

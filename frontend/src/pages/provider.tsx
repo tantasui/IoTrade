@@ -12,6 +12,8 @@ export default function ProviderDashboard() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [selectedFeed, setSelectedFeed] = useState<DataFeed | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [copiedFeedId, setCopiedFeedId] = useState(false);
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
   const [modal, setModal] = useState<{ isOpen: boolean; title: string; message: string; type?: 'success' | 'error' | 'info' }>({
     isOpen: false,
     title: '',
@@ -27,6 +29,7 @@ export default function ProviderDashboard() {
     location: '',
     pricePerQuery: 0,
     monthlySubscriptionPrice: 0.1,
+    isPremium: false,
     updateFrequency: 300,
     initialData: '',
   });
@@ -59,7 +62,6 @@ export default function ProviderDashboard() {
     try {
       console.log('[Provider] handleSubmit start', { formData });
       
-      // Step 1: Upload initial data to Walrus (backend API)
       let parsedData;
       try {
         parsedData = JSON.parse(formData.initialData);
@@ -67,17 +69,6 @@ export default function ProviderDashboard() {
         parsedData = formData.initialData;
       }
 
-      console.log('[Provider] Uploading data to Walrus...');
-      const uploadResponse = await apiClient.uploadData(parsedData);
-      
-      if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
-        throw new Error('Failed to upload data to Walrus');
-      }
-
-      const walrusBlobId = uploadResponse.data.blobId;
-      console.log('[Provider] Data uploaded to Walrus:', walrusBlobId);
-
-      // Step 2: Register feed on-chain (wallet signing)
       const packageId = getPackageId();
       const registryId = getRegistryId();
       
@@ -85,19 +76,71 @@ export default function ProviderDashboard() {
         throw new Error('Missing environment variables: NEXT_PUBLIC_SUI_PACKAGE_ID or NEXT_PUBLIC_SUI_REGISTRY_ID');
       }
 
-      console.log('[Provider] Registering feed on-chain...');
-      const feedId = await registerFeed(registryId, {
-        name: formData.name,
-        category: formData.category,
-        description: formData.description,
-        location: formData.location,
-        pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000), // Convert to MIST
-        monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
-        walrusBlobId: walrusBlobId,
-        updateFrequency: formData.updateFrequency,
-      }, packageId);
+      let walrusBlobId: string;
+      let feedId: string;
 
-      console.log('[Provider] Feed registered:', feedId);
+      if (formData.isPremium) {
+        // For premium feeds: Register feed first to get feedId, then encrypt and upload
+        console.log('[Provider] Premium feed: Registering feed first to get feedId...');
+        
+        // Register feed with placeholder blobId
+        feedId = await registerFeed(registryId, {
+          name: formData.name,
+          category: formData.category,
+          description: formData.description,
+          location: formData.location,
+          pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000),
+          monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
+          isPremium: formData.isPremium,
+          walrusBlobId: 'placeholder', // Temporary placeholder
+          updateFrequency: formData.updateFrequency,
+        }, packageId);
+
+        console.log('[Provider] Feed registered with feedId:', feedId);
+
+        // Now encrypt and upload data with the feedId
+        console.log('[Provider] Encrypting and uploading data with Seal...');
+        const uploadResponse = await apiClient.uploadData(parsedData, true, feedId);
+        
+        if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
+          throw new Error('Failed to upload encrypted data to Walrus');
+        }
+
+        walrusBlobId = uploadResponse.data.blobId;
+        console.log('[Provider] Encrypted data uploaded to Walrus:', walrusBlobId);
+
+        // Update feed with the real blobId
+        console.log('[Provider] Updating feed with real blobId...');
+        await updateFeedData(feedId, walrusBlobId, packageId);
+        console.log('[Provider] Feed updated with blobId');
+      } else {
+        // For non-premium feeds: Upload first, then register (original flow)
+        console.log('[Provider] Uploading data to Walrus...');
+        const uploadResponse = await apiClient.uploadData(parsedData, false);
+        
+        if (!uploadResponse || !uploadResponse.success || !uploadResponse.data?.blobId) {
+          throw new Error('Failed to upload data to Walrus');
+        }
+
+        walrusBlobId = uploadResponse.data.blobId;
+        console.log('[Provider] Data uploaded to Walrus:', walrusBlobId);
+
+        // Register feed on-chain
+        console.log('[Provider] Registering feed on-chain...');
+        feedId = await registerFeed(registryId, {
+          name: formData.name,
+          category: formData.category,
+          description: formData.description,
+          location: formData.location,
+          pricePerQuery: Math.floor(formData.pricePerQuery * 1_000_000_000),
+          monthlySubscriptionPrice: Math.floor(formData.monthlySubscriptionPrice * 1_000_000_000),
+          isPremium: formData.isPremium,
+          walrusBlobId: walrusBlobId,
+          updateFrequency: formData.updateFrequency,
+        }, packageId);
+
+        console.log('[Provider] Feed registered:', feedId);
+      }
 
       // Feed is already shared, so consumers can subscribe directly
       // No need to call share_feed_for_subscriptions
@@ -119,6 +162,7 @@ export default function ProviderDashboard() {
         location: '',
         pricePerQuery: 0,
         monthlySubscriptionPrice: 0.1,
+        isPremium: false,
         updateFrequency: 300,
         initialData: '',
       });
@@ -326,6 +370,19 @@ export default function ProviderDashboard() {
                 />
               </div>
 
+              <div className="flex items-center">
+                <input
+                  type="checkbox"
+                  id="isPremium"
+                  checked={formData.isPremium}
+                  onChange={(e) => setFormData({ ...formData, isPremium: e.target.checked })}
+                  className="mr-2"
+                />
+                <label htmlFor="isPremium" className="text-sm font-medium">
+                  Premium Feed (Seal encrypted)
+                </label>
+              </div>
+
               <div className="flex gap-4">
                 <button
                   type="submit"
@@ -365,6 +422,11 @@ export default function ProviderDashboard() {
                 <div key={feed.id} className="card">
                   <div className="flex justify-between items-start mb-4">
                     <h3 className="text-lg font-bold text-[#2d2d2d]">{feed.name}</h3>
+                    {feed.isPremium ? (
+                      <span className="badge-premium">Premium</span>
+                    ) : (
+                      <span className="badge-free">Free</span>
+                    )}
                   </div>
 
                   <p className="text-sm text-[#333333] mb-4">{feed.description}</p>
@@ -434,9 +496,34 @@ export default function ProviderDashboard() {
                 <div>
                   <h3 className="font-bold mb-4 text-[#2d2d2d]">Feed Details</h3>
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center gap-2">
                       <span className="text-[#333333]">Feed ID:</span>
-                      <code className="font-mono text-xs text-[#2d2d2d] bg-[#f5f5f5] px-2 py-1 rounded-[4px] break-all border border-[#e0e0e0]">{selectedFeed.id}</code>
+                      <div className="flex items-center gap-1 flex-1 justify-end">
+                        <code className="font-mono text-xs text-[#2d2d2d] bg-[#f5f5f5] px-2 py-1 rounded-[4px] break-all border border-[#e0e0e0]">{selectedFeed.id}</code>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(selectedFeed.id);
+                              setCopiedFeedId(true);
+                              setTimeout(() => setCopiedFeedId(false), 2000);
+                            } catch (err) {
+                              console.error('Failed to copy:', err);
+                            }
+                          }}
+                          className="p-1 hover:bg-[#f5f5f5] rounded-[4px] transition-colors text-[#333333] hover:text-[#2d2d2d]"
+                          title="Copy Feed ID"
+                        >
+                          {copiedFeedId ? (
+                            <svg className="w-4 h-4 text-[#56c214]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          )}
+                        </button>
+                      </div>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-[#333333]">Category:</span>
@@ -467,9 +554,35 @@ export default function ProviderDashboard() {
                   <h3 className="font-bold mb-4 text-[#2d2d2d]">IoT Device Endpoint</h3>
                   <div className="bg-[#f5f5f5] p-3 rounded-[4px] mb-3 border border-[#e0e0e0]">
                     <p className="text-xs text-[#333333] mb-1">Use this endpoint in your IoT device:</p>
-                    <code className="text-xs font-mono break-all text-[#2d2d2d] bg-white px-2 py-1 rounded-[4px] block border border-[#e0e0e0]">
-                      {process.env.NEXT_PUBLIC_API_URL || 'https://io-trade.vercel.app'}/api/iot/feeds/{selectedFeed.id}/update
-                    </code>
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs font-mono break-all text-[#2d2d2d] bg-white px-2 py-1 rounded-[4px] flex-1 border border-[#e0e0e0]">
+                        {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/iot/feeds/{selectedFeed.id}/update
+                      </code>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/iot/feeds/${selectedFeed.id}/update`;
+                            await navigator.clipboard.writeText(endpoint);
+                            setCopiedEndpoint(true);
+                            setTimeout(() => setCopiedEndpoint(false), 2000);
+                          } catch (err) {
+                            console.error('Failed to copy:', err);
+                          }
+                        }}
+                        className="p-1 hover:bg-white rounded-[4px] transition-colors text-[#333333] hover:text-[#2d2d2d] flex-shrink-0"
+                        title="Copy endpoint"
+                      >
+                        {copiedEndpoint ? (
+                          <svg className="w-4 h-4 text-[#56c214]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xs text-[#333333] mb-3">
                     Include your API key in the <code className="bg-[#f5f5f5] px-1 rounded-[4px] text-[#2d2d2d] border border-[#e0e0e0]">X-API-Key</code> header

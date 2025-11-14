@@ -140,14 +140,31 @@ router.get('/:feedId', async (req: Request | AuthenticatedRequest, res: Response
     if (!data) {
       // Retrieve data from Walrus
       if (feed.isPremium) {
+        // For premium feeds, return encrypted bytes (frontend will decrypt with Seal)
+        // Don't cache encrypted data - it needs to be decrypted per request
         const decryptionKey = req.headers['x-decryption-key'] as string;
-        data = await walrusService.retrieveData(feed.walrusBlobId, decryptionKey);
+        data = await walrusService.retrieveData(feed.walrusBlobId, decryptionKey, feedId);
+        
+        // Return encrypted bytes as base64 for JSON transport
+        if (data instanceof Uint8Array) {
+          return res.json({
+            success: true,
+            encrypted: true,
+            encryptionType: 'seal',
+            data: Buffer.from(data).toString('base64'),
+            feed: {
+              id: feed.id,
+              name: feed.name,
+              category: feed.category,
+              lastUpdated: feed.lastUpdated
+            }
+          });
+        }
       } else {
         data = await walrusService.retrieveData(feed.walrusBlobId);
+        // Cache non-premium data
+        cache.set(cacheKey, data);
       }
-
-      // Cache the data
-      cache.set(cacheKey, data);
     }
 
     res.json({
@@ -284,10 +301,11 @@ router.get('/:feedId/history', async (req: Request | AuthenticatedRequest, res: 
 /**
  * POST /api/data/upload
  * Upload data to Walrus (utility endpoint)
+ * For premium feeds, feedId is required for Seal encryption
  */
 router.post('/upload', async (req: Request, res: Response) => {
   try {
-    const { data, encrypt } = req.body;
+    const { data, encrypt, feedId } = req.body;
 
     if (!data) {
       return res.status(400).json({
@@ -296,7 +314,15 @@ router.post('/upload', async (req: Request, res: Response) => {
       });
     }
 
-    const blobId = await walrusService.uploadData(data, encrypt || false);
+    // For premium feeds, feedId is required for Seal encryption
+    if (encrypt && !feedId) {
+      return res.status(400).json({
+        success: false,
+        error: 'feedId is required for premium feed encryption'
+      });
+    }
+
+    const blobId = await walrusService.uploadData(data, encrypt || false, feedId);
 
     res.json({
       success: true,

@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import Layout from '@/components/common/Layout';
 import { useSuiWallet } from '@/hooks/useSuiWallet';
+import { useSeal } from '@/hooks/useSeal';
 import apiClient from '@/lib/api';
 import Modal from '@/components/common/Modal';
 import type { DataFeed } from '@/types/api';
 
 export default function ConsumerMarketplace() {
   const { isConnected, address, subscribe, getPackageId, getRegistryId, getTreasuryId } = useSuiWallet();
+  const { decryptData, isDecrypting, isConfigured: isSealConfigured } = useSeal();
   const [feeds, setFeeds] = useState<DataFeed[]>([]);
   const [filteredFeeds, setFilteredFeeds] = useState<DataFeed[]>([]);
   const [selectedFeed, setSelectedFeed] = useState<DataFeed | null>(null);
@@ -84,7 +86,53 @@ export default function ConsumerMarketplace() {
       }
 
       if (response && 'success' in response && response.success) {
-        setPreviewData(response.data);
+        // Check if data is Seal-encrypted
+        if (response.encrypted && response.encryptionType === 'seal') {
+          // Decrypt Seal-encrypted data
+          if (!subscriptionId || !isConnected || !address) {
+            setModal({
+              isOpen: true,
+              title: 'Decryption Required',
+              message: 'This is a premium feed. Please subscribe to decrypt the data.',
+              type: 'error',
+            });
+            setPreviewData(null);
+            return;
+          }
+
+          if (!isSealConfigured) {
+            setModal({
+              isOpen: true,
+              title: 'Seal Not Configured',
+              message: 'Seal encryption is not properly configured. Please check environment variables.',
+              type: 'error',
+            });
+            setPreviewData(null);
+            return;
+          }
+
+          try {
+            // Decrypt the encrypted data
+            const decryptedData = await decryptData(
+              response.data, // Base64 encoded encrypted bytes
+              feed.id, // Feed ID
+              subscriptionId // Subscription object ID
+            );
+            setPreviewData(decryptedData);
+          } catch (decryptError: any) {
+            console.error('Decryption error:', decryptError);
+            setModal({
+              isOpen: true,
+              title: 'Decryption Failed',
+              message: decryptError.message || 'Failed to decrypt premium feed data. Please ensure your subscription is active.',
+              type: 'error',
+            });
+            setPreviewData(null);
+          }
+        } else {
+          // Regular (non-encrypted) data
+          setPreviewData(response.data);
+        }
       } else {
         setPreviewData(null);
       }
