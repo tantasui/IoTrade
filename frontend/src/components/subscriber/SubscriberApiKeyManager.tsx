@@ -6,6 +6,8 @@
 import { useState, useEffect } from 'react';
 import apiClient from '@/lib/api';
 import type { ApiKey } from '@/types/api';
+import { useSeal } from '@/hooks/useSeal';
+import { useSuiWallet } from '@/hooks/useSuiWallet';
 
 interface SubscriberApiKeyManagerProps {
   subscriptionId: string;
@@ -29,6 +31,8 @@ export default function SubscriberApiKeyManager({
     description: '',
     expiresAt: '',
   });
+  const { getOrCreateSessionKey } = useSeal();
+  const { isConnected: walletConnected } = useSuiWallet();
 
   const loadApiKeys = async () => {
     try {
@@ -59,10 +63,37 @@ export default function SubscriberApiKeyManager({
       });
 
       if (response && 'success' in response && response.success && 'data' in response) {
+        const apiKeyId = response.data.id;
         setNewKey(response.data.key);
         setShowCreateForm(false);
         setFormData({ name: '', description: '', expiresAt: '' });
         loadApiKeys();
+        
+        // OPTION 1: Automatically create and store session key for seamless decryption
+        // This allows subscriber-viewer to work with just API key (no wallet needed)
+        if (walletConnected && subscriptionId) {
+          try {
+            console.log('[SubscriberApiKeyManager] 🔐 Creating session key for seamless decryption...');
+            console.log('[SubscriberApiKeyManager] ⚠️  You will be prompted to sign a message with your wallet.');
+            const sessionKey = await getOrCreateSessionKey();
+            const exportedSessionKey = await sessionKey.export();
+            
+            console.log('[SubscriberApiKeyManager] ✅ Session key created! Storing server-side...');
+            
+            // Store session key server-side (30 min TTL)
+            const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+            await apiClient.storeSessionKey(apiKeyId, exportedSessionKey, expiresAt);
+            
+            console.log('[SubscriberApiKeyManager] ✅ Session key stored! Subscriber-viewer can now use this API key seamlessly.');
+          } catch (error: any) {
+            console.error('[SubscriberApiKeyManager] ❌ Failed to store session key:', error);
+            console.warn('[SubscriberApiKeyManager] API key created, but subscriber-viewer will need wallet connection for decryption.');
+            // Don't throw - API key creation succeeded, session key is optional
+          }
+        } else {
+          console.log('[SubscriberApiKeyManager] ⚠️  Wallet not connected - session key not created. Connect wallet to enable seamless decryption.');
+        }
+        
         onKeyCreated?.();
       }
     } catch (error: any) {

@@ -155,6 +155,14 @@ class ApiClient {
     return response.data as CreateApiKeyResponseType;
   }
 
+  async storeSessionKey(apiKeyId: string, sessionKey: any, expiresAt?: Date): Promise<{ success: boolean }> {
+    const response = await this.client.post(`/api/api-keys/${apiKeyId}/session-key`, {
+      sessionKey,
+      expiresAt: expiresAt?.toISOString(),
+    });
+    return response.data;
+  }
+
   async getProviderApiKeys(providerAddress: string): Promise<ApiKeysListResponse> {
     const response = await this.client.get(`/api/api-keys/provider/${providerAddress}`);
     return response.data as ApiKeysListResponse;

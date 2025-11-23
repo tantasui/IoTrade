@@ -242,6 +242,80 @@ class ApiKeyService {
       },
     });
   }
+
+  /**
+   * Store pre-authorized session key for seamless decryption (Option 1)
+   * This allows subscribers to use API keys without needing wallet connection
+   * Session key is created once when subscribing, then stored server-side
+   */
+  async storeSessionKey(
+    apiKeyId: string,
+    sessionKey: any, // ExportedSessionKey (JSON object)
+    expiresAt: Date
+  ): Promise<void> {
+    // Store session key as JSON string (encrypted in production)
+    const sessionKeyJson = JSON.stringify(sessionKey);
+    
+    await prisma.apiKey.update({
+      where: { id: apiKeyId },
+      data: {
+        sessionKey: sessionKeyJson,
+        sessionKeyExpiresAt: expiresAt,
+      },
+    });
+  }
+
+  /**
+   * Get stored session key for an API key
+   * Returns null if not found or expired
+   */
+  async getStoredSessionKey(apiKeyId: string): Promise<any | null> {
+    const apiKey = await prisma.apiKey.findUnique({
+      where: { id: apiKeyId },
+      select: {
+        sessionKey: true,
+        sessionKeyExpiresAt: true,
+      },
+    });
+
+    if (!apiKey || !apiKey.sessionKey) {
+      return null;
+    }
+
+    // Check if expired
+    if (apiKey.sessionKeyExpiresAt && apiKey.sessionKeyExpiresAt < new Date()) {
+      // Clear expired session key
+      await prisma.apiKey.update({
+        where: { id: apiKeyId },
+        data: {
+          sessionKey: null,
+          sessionKeyExpiresAt: null,
+        },
+      });
+      return null;
+    }
+
+    // Parse and return session key
+    try {
+      return JSON.parse(apiKey.sessionKey);
+    } catch (error) {
+      console.error('[ApiKeyService] Failed to parse stored session key:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clear stored session key (e.g., when expired)
+   */
+  async clearSessionKey(apiKeyId: string): Promise<void> {
+    await prisma.apiKey.update({
+      where: { id: apiKeyId },
+      data: {
+        sessionKey: null,
+        sessionKeyExpiresAt: null,
+      },
+    });
+  }
 }
 
 export default new ApiKeyService();

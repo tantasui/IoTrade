@@ -41,38 +41,40 @@ export class WalrusService {
         dataToUpload = data;
       }
 
-      // Encrypt data if requested
+      // SECURITY: Encrypt data BEFORE upload to Walrus
+      // Walrus is decentralized storage - anyone with blob ID can access data
+      // Encryption is the ONLY protection for premium feeds
       if (encrypt) {
-        // Use Seal encryption for premium feeds
-        if (sealService.isConfigured() && feedId) {
-          try {
-            const { encryptedBytes } = await sealService.encryptData(dataToUpload, feedId);
-            // Store encrypted bytes directly (not JSON)
-            dataToUpload = encryptedBytes;
-            console.log('[WalrusService] Data encrypted with Seal', { feedId, size: encryptedBytes.length });
-          } catch (sealError: any) {
-            console.warn('[WalrusService] Seal encryption failed, falling back to AES:', sealError.message);
-            // Fallback to AES encryption if Seal fails
-            const encryptionKey = this.generateEncryptionKey();
-            const encryptedString = this.encryptWithKey(typeof dataToUpload === 'string' ? dataToUpload : JSON.stringify(dataToUpload), encryptionKey);
-            dataToUpload = JSON.stringify({
-              encrypted: true,
-              encryptionType: 'aes',
-              data: encryptedString,
-              keyHint: encryptionKey.substring(0, 8) // Store hint for testing
-            });
-          }
-        } else {
-          // Fallback to AES encryption if Seal not configured
-          console.warn('[WalrusService] Seal not configured, using AES encryption');
-          const encryptionKey = this.generateEncryptionKey();
-          const encryptedString = this.encryptWithKey(typeof dataToUpload === 'string' ? dataToUpload : JSON.stringify(dataToUpload), encryptionKey);
-          dataToUpload = JSON.stringify({
-            encrypted: true,
-            encryptionType: 'aes',
-            data: encryptedString,
-            keyHint: encryptionKey.substring(0, 8) // Store hint for testing
+        if (!feedId) {
+          throw new Error('feedId is required for Seal encryption');
+        }
+        
+        if (!sealService.isConfigured()) {
+          throw new Error('Seal encryption is not configured. Please set SUI_PACKAGE_ID and SEAL_KEY_SERVER_OBJECT_IDS in environment variables. Premium feeds cannot be uploaded without encryption.');
+        }
+        
+        try {
+          // CRITICAL: Encryption happens HERE, BEFORE upload
+          // This ensures only encrypted bytes are stored in Walrus
+          const { encryptedBytes } = await sealService.encryptData(dataToUpload, feedId);
+          
+          // Replace plaintext with encrypted bytes
+          // Only encrypted bytes will be uploaded to Walrus
+          dataToUpload = encryptedBytes;
+          
+          const originalSize = typeof dataToUpload === 'string' 
+            ? Buffer.byteLength(dataToUpload, 'utf8')
+            : (dataToUpload as Uint8Array).length;
+          
+          console.log('[WalrusService] 🔒 Data encrypted with Seal BEFORE upload', { 
+            feedId, 
+            originalSize,
+            encryptedSize: encryptedBytes.length 
           });
+        } catch (sealError: any) {
+          console.error('[WalrusService] ❌ Seal encryption failed:', sealError.message);
+          // SECURITY: Fail securely - do NOT upload unencrypted premium data
+          throw new Error(`Seal encryption failed: ${sealError.message}. Premium feeds MUST be encrypted before upload to Walrus. Upload aborted.`);
         }
       }
 
@@ -140,51 +142,80 @@ export class WalrusService {
   /**
    * Retrieve data from Walrus storage
    * @param blobId - Blob ID to retrieve
-   * @param decryptionKey - Optional decryption key (for AES fallback)
-   * @param feedId - Optional feed ID (for Seal-encrypted data)
-   * @returns Data (encrypted bytes for Seal, decrypted JSON for AES or plain data)
+   * @param decryptionKey - Optional decryption key (deprecated, not used for Seal)
+   * @param feedId - Optional feed ID (required for Seal-encrypted premium feeds)
+   * @returns Data (encrypted bytes for Seal-encrypted premium feeds, plain data for non-premium)
    */
   async retrieveData(blobId: string, decryptionKey?: string, feedId?: string): Promise<any> {
     try {
       const url = `${this.aggregatorUrl}/v1/blobs/${blobId}`;
-      console.log('[WalrusService] Retrieve start', { url, feedId });
+      const isPremiumFeed = feedId && sealService.isConfigured();
+      console.log('[WalrusService] Retrieve start', { url, feedId, sealConfigured: sealService.isConfigured(), isPremiumFeed });
       
-      // For Seal-encrypted data, we need to return bytes
-      const response = await axios.get(url, { 
-        responseType: feedId && sealService.isConfigured() ? 'arraybuffer' : 'text' 
-      });
-
-      // If it's Seal-encrypted, return as Uint8Array for frontend decryption
-      if (feedId && sealService.isConfigured() && response.data instanceof ArrayBuffer) {
-        return new Uint8Array(response.data);
+      // For premium feeds, always try arraybuffer first to get raw bytes
+      // This handles both Seal-encrypted bytes and JSON stored as bytes
+      let response;
+      try {
+        response = await axios.get(url, { 
+          responseType: isPremiumFeed ? 'arraybuffer' : 'text' 
+        });
+      } catch (arrayBufferError: any) {
+        // If arraybuffer fails, try as text (fallback)
+        console.warn('[WalrusService] ArrayBuffer request failed, trying text', { error: arrayBufferError.message });
+        response = await axios.get(url, { responseType: 'text' });
       }
 
+      // Handle ArrayBuffer response (for premium feeds expecting Seal bytes)
+      if (response.data instanceof ArrayBuffer || Buffer.isBuffer(response.data)) {
+        const buffer = response.data instanceof ArrayBuffer 
+          ? new Uint8Array(response.data)
+          : new Uint8Array(response.data);
+        
+        // For premium feeds, data must be Seal-encrypted bytes
+        if (isPremiumFeed) {
+          console.log('[WalrusService] Retrieved Seal-encrypted bytes for premium feed', { feedId, size: buffer.length });
+          return buffer;
+        }
+        
+        // For non-premium feeds, try to decode as text/JSON
+        try {
+          const textDecoder = new TextDecoder('utf-8', { fatal: false });
+          const decodedString = textDecoder.decode(buffer);
+          
+          if (decodedString.trim().startsWith('{') || decodedString.trim().startsWith('[')) {
+            try {
+              return JSON.parse(decodedString);
+            } catch (jsonError) {
+              // Not valid JSON, return as string
+              return decodedString;
+            }
+          }
+          return decodedString;
+        } catch (decodeError) {
+          // If decoding fails, return as binary
+          return buffer;
+        }
+      }
+
+      // Handle string/text response
       let data = typeof response.data === 'string' ? response.data : response.data.toString();
+      
+      // For premium feeds, we should never get text - it must be Seal-encrypted bytes
+      if (isPremiumFeed) {
+        console.error('[WalrusService] Premium feed returned text instead of Seal-encrypted bytes. This indicates the data was not properly encrypted with Seal.', { feedId });
+        throw new Error('Premium feed data must be Seal-encrypted. Received text instead of encrypted bytes. Data may need to be re-uploaded with Seal encryption.');
+      }
 
-      // Try to parse as JSON
+      // For non-premium feeds, parse as JSON if possible
       try {
-        const parsed = JSON.parse(data);
-
-        // Check if data is encrypted with AES (fallback)
-        if (parsed.encrypted && parsed.encryptionType === 'aes' && decryptionKey) {
-          const decrypted = this.decryptWithKey(parsed.data, decryptionKey);
-          return JSON.parse(decrypted);
-        }
-
-        // Check if data is encrypted with old format (backward compatibility)
-        if (parsed.encrypted && decryptionKey) {
-          const decrypted = this.decryptWithKey(parsed.data, decryptionKey);
-          return JSON.parse(decrypted);
-        }
-
-        return parsed;
+        return JSON.parse(data);
       } catch (e) {
         // If not JSON, return as is
         return data;
       }
     } catch (error: any) {
       const status = error?.response?.status;
-      console.error('Error retrieving from Walrus:', error.message, { status });
+      console.error('[WalrusService] Error retrieving from Walrus:', error.message, { status, feedId });
       throw new Error(`Walrus retrieval failed: ${error.message}`);
     }
   }

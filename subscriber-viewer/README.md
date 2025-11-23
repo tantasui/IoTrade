@@ -1,5 +1,19 @@
 # Data Feed Subscriber Viewer
 
+## ✨ Option 1: Pre-Authorized Session Keys
+
+**This viewer now supports seamless decryption without wallet connection!**
+
+When you subscribe via the React frontend, a session key is automatically stored server-side. When you connect with just your API key, the backend automatically retrieves the stored session key and decrypts data for you.
+
+**No wallet required** - just your API key! 🎉
+
+See [OPTION1_IMPLEMENTATION.md](./OPTION1_IMPLEMENTATION.md) for details.
+
+---
+
+# Data Feed Subscriber Viewer
+
 A real-time WebSocket client for monitoring data feeds from the Data Marketplace.
 
 ## Features

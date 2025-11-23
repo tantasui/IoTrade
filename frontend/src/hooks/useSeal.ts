@@ -15,7 +15,7 @@ const SEAL_KEY_SERVER_OBJECT_IDS = [
   '0xf5d14a81a982144ae441cd7d64b09027f116a468bd36e7eca494f750591623c8',
 ];
 
-const TTL_MIN = 60; // 60 minutes TTL for session key
+const TTL_MIN = 30; // 30 minutes TTL for session key (max allowed by Seal)
 
 export function useSeal() {
   const client = useSuiClient();
@@ -24,13 +24,16 @@ export function useSeal() {
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Initialize Seal client
+  // Initialize Seal client with proper SuiClient instance
+  // Note: Must use SuiClient from @mysten/sui/client, not dapp-kit client
   const sealClient = useMemo(() => {
-    if (!client) return null;
-    
     try {
+      const { getFullnodeUrl, SuiClient } = require('@mysten/sui/client');
+      const network = process.env.NEXT_PUBLIC_SUI_NETWORK || 'testnet';
+      const suiClientForSeal = new SuiClient({ url: getFullnodeUrl(network as any) });
+      
       return new SealClient({
-        suiClient: client as any, // Type compatibility workaround
+        suiClient: suiClientForSeal as any,
         serverConfigs: SEAL_KEY_SERVER_OBJECT_IDS.map((id) => ({
           objectId: id,
           weight: 1,
@@ -41,7 +44,7 @@ export function useSeal() {
       console.error('Failed to initialize Seal client:', err);
       return null;
     }
-  }, [client]);
+  }, []); // No dependencies - create once
 
   /**
    * Get or create a SessionKey for decryption
@@ -65,7 +68,8 @@ export function useSeal() {
       if (stored) {
         // Import session key - need to create a new SuiClient instance for import
         const { getFullnodeUrl, SuiClient } = await import('@mysten/sui/client');
-        const importClient = new SuiClient({ url: getFullnodeUrl('testnet') });
+        const network = process.env.NEXT_PUBLIC_SUI_NETWORK || 'testnet';
+        const importClient = new SuiClient({ url: getFullnodeUrl(network as any) });
         const sessionKey = await SessionKey.import(stored, importClient);
         // Verify session key is still valid and matches current address
         if (!sessionKey.isExpired() && sessionKey.getAddress() === account.address) {
@@ -79,12 +83,16 @@ export function useSeal() {
     }
 
     // Create new session key
-    // packageId should be a hex string, not bytes
+    // Need to use a proper SuiClient instance (not dapp-kit client) for SessionKey.create
+    const { getFullnodeUrl, SuiClient } = await import('@mysten/sui/client');
+    const network = process.env.NEXT_PUBLIC_SUI_NETWORK || 'testnet';
+    const suiClientForSeal = new SuiClient({ url: getFullnodeUrl(network as any) });
+    
     const sessionKey = await SessionKey.create({
       address: account.address,
       packageId: packageId, // Pass hex string directly
       ttlMin: TTL_MIN,
-      suiClient: client as any, // Type compatibility workaround
+      suiClient: suiClientForSeal,
     });
 
     // Sign the session key message with wallet
@@ -169,7 +177,11 @@ export function useSeal() {
       moveCallConstructor(tx, sealId);
 
       // Build transaction bytes (only transaction kind) for Seal decryption
-      const txBytes = await tx.build({ client: client as any, onlyTransactionKind: true });
+      // Must use proper SuiClient instance, not dapp-kit client
+      const { getFullnodeUrl, SuiClient } = await import('@mysten/sui/client');
+      const network = process.env.NEXT_PUBLIC_SUI_NETWORK || 'testnet';
+      const suiClientForTx = new SuiClient({ url: getFullnodeUrl(network as any) });
+      const txBytes = await tx.build({ client: suiClientForTx as any, onlyTransactionKind: true });
 
       // Fetch decryption keys from key servers
       // This verifies the access policy on-chain
@@ -221,6 +233,7 @@ export function useSeal() {
 
   return {
     decryptData,
+    getOrCreateSessionKey,
     isDecrypting,
     error,
     isConfigured,

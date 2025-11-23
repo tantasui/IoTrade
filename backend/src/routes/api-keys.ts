@@ -183,6 +183,43 @@ router.get('/:keyId', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/api-keys/:keyId/session-key
+ * Store pre-authorized session key for seamless decryption (Option 1)
+ * This allows subscribers to use API keys without needing wallet connection
+ * Session key is created once when subscribing, then stored server-side
+ */
+router.post('/:keyId/session-key', async (req: Request, res: Response) => {
+  try {
+    const { keyId } = req.params;
+    const { sessionKey, expiresAt } = req.body;
+
+    if (!sessionKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'sessionKey is required',
+      });
+    }
+
+    // Calculate expiration (30 minutes from now, max allowed by Seal)
+    const expirationDate = expiresAt ? new Date(expiresAt) : new Date(Date.now() + 30 * 60 * 1000);
+
+    await apiKeyService.storeSessionKey(keyId, sessionKey, expirationDate);
+
+    res.json({
+      success: true,
+      message: 'Session key stored successfully',
+      expiresAt: expirationDate,
+    });
+  } catch (error: any) {
+    console.error('Error storing session key:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
  * DELETE /api/api-keys/:keyId
  * Revoke an API key
  */

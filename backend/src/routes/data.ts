@@ -140,10 +140,9 @@ router.get('/:feedId', async (req: Request | AuthenticatedRequest, res: Response
     if (!data) {
       // Retrieve data from Walrus
       if (feed.isPremium) {
-        // For premium feeds, return encrypted bytes (frontend will decrypt with Seal)
+        // For premium feeds, return Seal-encrypted bytes (frontend will decrypt with Seal)
         // Don't cache encrypted data - it needs to be decrypted per request
-        const decryptionKey = req.headers['x-decryption-key'] as string;
-        data = await walrusService.retrieveData(feed.walrusBlobId, decryptionKey, feedId);
+        data = await walrusService.retrieveData(feed.walrusBlobId, undefined, feedId);
         
         // Return encrypted bytes as base64 for JSON transport
         if (data instanceof Uint8Array) {
@@ -159,6 +158,9 @@ router.get('/:feedId', async (req: Request | AuthenticatedRequest, res: Response
               lastUpdated: feed.lastUpdated
             }
           });
+        } else {
+          // Premium feed data must be Seal-encrypted bytes
+          throw new Error('Premium feed data must be Seal-encrypted bytes. Received invalid format.');
         }
       } else {
         data = await walrusService.retrieveData(feed.walrusBlobId);

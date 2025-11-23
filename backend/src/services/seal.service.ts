@@ -1,5 +1,7 @@
-import { SealClient } from '@mysten/seal';
+import { SealClient, SessionKey, EncryptedObject, NoAccessError, type ExportedSessionKey } from '@mysten/seal';
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
+import { Transaction } from '@mysten/sui/transactions';
+import { fromHEX } from '@mysten/sui/utils';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -117,6 +119,104 @@ export class SealService {
    */
   getKeyServerObjectIds(): string[] {
     return this.keyServerObjectIds;
+  }
+
+  /**
+   * Decrypt Seal-encrypted data using a session key
+   * This allows the backend to decrypt data on behalf of users who have provided a session key
+   * @param encryptedData - Base64 encoded encrypted bytes
+   * @param feedId - Feed ID (used as Seal identity)
+   * @param subscriptionId - Subscription object ID (for access policy verification)
+   * @param sessionKey - Exported session key from the user
+   * @param consumerAddress - Consumer wallet address
+   * @returns Decrypted data
+   */
+  async decryptData(
+    encryptedData: string,
+    feedId: string,
+    subscriptionId: string,
+    sessionKey: ExportedSessionKey,
+    consumerAddress: string
+  ): Promise<any> {
+    try {
+      if (!this.isConfigured()) {
+        throw new Error('Seal is not configured');
+      }
+
+      // Convert base64 to Uint8Array
+      const encryptedBytes = Uint8Array.from(Buffer.from(encryptedData, 'base64'));
+
+      // Parse encrypted object to get the Seal ID
+      const encryptedObject = EncryptedObject.parse(encryptedBytes);
+      const sealId = encryptedObject.id;
+
+      // Import session key (will throw ExpiredSessionKeyError if expired)
+      let importedSessionKey;
+      try {
+        importedSessionKey = await SessionKey.import(sessionKey, this.suiClient as any);
+      } catch (importError: any) {
+        // Check if it's an expired session key error
+        if (importError.message?.includes('expired') || importError.constructor?.name === 'ExpiredSessionKeyError') {
+          throw new Error('SESSION_KEY_EXPIRED'); // Special error code for handling
+        }
+        throw importError;
+      }
+
+      // Verify session key matches consumer address
+      if (importedSessionKey.getAddress() !== consumerAddress) {
+        throw new Error('Session key does not match consumer address');
+      }
+
+      // Build seal_approve transaction
+      // sealId from EncryptedObject is a hex string, convert to bytes
+      // Move contract signature: seal_approve(id: vector<u8>, feed: &DataFeed, subscription: &Subscription)
+      const tx = new Transaction();
+      const sealIdHex = typeof sealId === 'string' ? sealId.replace('0x', '') : sealId;
+      const sealIdBytes = fromHEX(sealIdHex);
+      
+      tx.moveCall({
+        target: `${this.packageId}::seal_access::seal_approve`,
+        arguments: [
+          tx.pure.vector('u8', Array.from(sealIdBytes)), // Seal identity (vector<u8>) - FIRST
+          tx.object(feedId), // DataFeed object - SECOND
+          tx.object(subscriptionId), // Subscription object - THIRD
+        ],
+      });
+
+      // Build transaction bytes (only transaction kind) for Seal decryption
+      const txBytes = await tx.build({ client: this.suiClient as any, onlyTransactionKind: true });
+
+      // Fetch decryption keys from key servers
+      // This verifies the access policy on-chain
+      try {
+        await this.client.fetchKeys({
+          ids: [sealId],
+          txBytes,
+          sessionKey: importedSessionKey,
+          threshold: 2, // Require 2 key servers
+        });
+      } catch (err) {
+        const errorMsg =
+          err instanceof NoAccessError
+            ? 'No access to decryption keys. Please ensure you have an active subscription.'
+            : 'Unable to fetch decryption keys';
+        throw new Error(errorMsg);
+      }
+
+      // Decrypt using Seal with session key
+      const decryptedBytes = await this.client.decrypt({
+        data: encryptedBytes,
+        sessionKey: importedSessionKey,
+        txBytes,
+      });
+
+      // Convert decrypted bytes to string and parse JSON
+      const decryptedString = new TextDecoder().decode(decryptedBytes);
+      return JSON.parse(decryptedString);
+    } catch (error: any) {
+      console.error('[SealService] Decryption error:', error);
+      throw new Error(`Seal decryption failed: ${error.message}`);
+    }
   }
 }
 

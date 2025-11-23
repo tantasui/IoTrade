@@ -188,6 +188,31 @@ function handleDataMessage(message) {
         return;
     }
 
+    // Check if data is Seal-encrypted (premium feed)
+    if (message.encrypted && message.encryptionType === 'seal') {
+        console.warn('⚠️ Received Seal-encrypted data. This viewer cannot decrypt premium feeds.');
+        showError('Premium feed detected: This viewer cannot decrypt Seal-encrypted data. Please use the full frontend application with wallet connection to decrypt premium feeds.');
+        
+        // Show encrypted data info instead
+        const encryptedInfo = {
+            encrypted: true,
+            encryptionType: 'seal',
+            feedId: message.feedId,
+            dataLength: message.data ? message.data.length : 0,
+            message: 'This is Seal-encrypted data. Decryption requires the full frontend application with Sui wallet connection and active subscription.',
+            note: 'To view decrypted data, use the main frontend application at the Consumer Marketplace or Subscriber Dashboard.'
+        };
+        
+        dataIndex++;
+        renderer.messageCount = dataIndex;
+        renderer.messageTimestamps.push(message.timestamp || Date.now());
+        
+        // Add encrypted info to list
+        addDataItem(encryptedInfo, message.timestamp || Date.now(), dataIndex);
+        renderer.updateStats();
+        return;
+    }
+
     dataIndex++;
     renderer.messageCount = dataIndex;
     renderer.messageTimestamps.push(message.timestamp || Date.now());

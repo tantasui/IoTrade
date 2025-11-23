@@ -37,6 +37,11 @@ model ApiKey {
   // Rate limiting (per subscription tier)
   rateLimit     Int?     @map("rate_limit") // Requests per minute
   
+  // Pre-authorized session key for seamless decryption (Option 1)
+  // Stored when user subscribes (encrypted JSON)
+  sessionKey    String?  @map("session_key") // Encrypted session key for Seal decryption
+  sessionKeyExpiresAt DateTime? @map("session_key_expires_at") // When session key expires
+  
   // Relations
   usageLogs     UsageLog[]
   device        Device?

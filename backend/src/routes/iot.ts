@@ -44,34 +44,53 @@ router.post('/feeds/:feedId/update',
         apiKeyId: req.apiKey.id,
       };
 
-      // Check if feed is premium (async, non-blocking - use cached value if available)
-      // For now, default to false to avoid blocking on blockchain query
-      // This will be checked async after response is sent
+      // SECURITY: Check if feed is premium BEFORE upload
+      // If feed is premium, we MUST encrypt before uploading to Walrus
+      // Walrus is decentralized - anyone with blob ID can access unencrypted data
       let encrypt = false;
       let feedIsPremium = false;
       
-      // Try to get feed premium status quickly (with timeout)
+      // Try to get feed premium status (with timeout)
+      // CRITICAL: If feed lookup fails, we should NOT upload unencrypted data
+      // Better to fail securely than risk exposing premium data
       try {
         const feedPromise = suiService.getDataFeed(feedId);
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), 2000)
+          setTimeout(() => reject(new Error('Timeout')), 3000) // Increased timeout for production
         );
         const feed = await Promise.race([feedPromise, timeoutPromise]) as any;
-        feedIsPremium = feed?.isPremium || false;
-        encrypt = feedIsPremium;
-      } catch (error) {
-        // If feed lookup times out or fails, continue without encryption
-        // Will be checked async later
-        console.warn(`[${requestId}] Feed lookup timeout/failed, continuing without encryption check`);
+        
+        if (!feed) {
+          console.warn(`[${requestId}] Feed ${feedId} not found on-chain`);
+          // If feed doesn't exist, don't encrypt (it's not a premium feed)
+          encrypt = false;
+        } else {
+          feedIsPremium = feed.isPremium || false;
+          encrypt = feedIsPremium;
+          
+          if (feedIsPremium) {
+            console.log(`[${requestId}] 🔒 Premium feed detected - will encrypt before upload`);
+          }
+        }
+      } catch (error: any) {
+        // SECURITY: If feed lookup fails, we have two options:
+        // 1. Fail securely (don't upload) - safest but may block legitimate requests
+        // 2. Default to non-premium (current) - faster but less secure
+        // For production, consider failing securely or requiring feedId validation upfront
+        console.warn(`[${requestId}] ⚠️  Feed lookup timeout/failed:`, error.message);
+        console.warn(`[${requestId}] ⚠️  Defaulting to non-premium (no encryption). If feed is actually premium, data will be unencrypted in Walrus!`);
+        // TODO: In production, consider failing securely or caching feed premium status
+        encrypt = false;
       }
 
       // Upload to Walrus (this is the only blocking operation we need)
       const blobId = await walrusService.uploadData(enrichedData, encrypt, feedId);
 
       // Broadcast to WebSocket clients immediately
+      // For premium feeds, broadcastDataUpdate will fetch encrypted bytes from Walrus
       try {
-        broadcastDataUpdate(feedId, enrichedData);
-        console.log(`[${requestId}] 📡 Broadcasted data update to WebSocket clients`);
+        await broadcastDataUpdate(feedId, enrichedData, feedIsPremium);
+        console.log(`[${requestId}] 📡 Broadcasted data update to WebSocket clients (premium: ${feedIsPremium})`);
       } catch (error: any) {
         console.warn(`[${requestId}] ⚠️  Failed to broadcast update:`, error.message);
       }

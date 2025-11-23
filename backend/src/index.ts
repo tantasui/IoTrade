@@ -90,6 +90,9 @@ interface WSClient {
   feedId?: string;
   subscriptionId?: string;
   apiKeyId?: string;
+  consumerAddress?: string;
+  sessionKey?: any; // ExportedSessionKey for Seal decryption
+  signedTxBytes?: string; // Signed transaction bytes for seal_approve (base64)
   isAlive: boolean;
 }
 
@@ -116,10 +119,12 @@ wss.on('connection', (ws: WebSocket, req: any) => {
 
       if (data.type === 'subscribe') {
         // Subscribe to a feed
-        const { feedId, subscriptionId, consumer, apiKey } = data;
+        const { feedId, subscriptionId, consumer, apiKey, sessionKey, signedTxBytes } = data;
 
         let hasAccess = false;
         let apiKeyId: string | undefined;
+        let consumerAddress: string | undefined;
+        let resolvedSubscriptionId: string | undefined; // Store the actual subscription object ID
 
         // Try API key authentication first
         if (apiKey) {
@@ -136,6 +141,8 @@ wss.on('connection', (ws: WebSocket, req: any) => {
                     validation.apiKey.consumerAddress || ''
                   );
                   apiKeyId = validation.apiKey.id;
+                  consumerAddress = validation.apiKey.consumerAddress || undefined;
+                  resolvedSubscriptionId = validation.apiKey.subscriptionId; // Store actual subscription ID
                 }
               }
             }
@@ -153,6 +160,8 @@ wss.on('connection', (ws: WebSocket, req: any) => {
         // Fallback to legacy authentication
         if (!hasAccess && subscriptionId && consumer) {
           hasAccess = await suiService.checkAccess(subscriptionId, consumer);
+          consumerAddress = consumer;
+          resolvedSubscriptionId = subscriptionId;
         }
 
         if (!hasAccess) {
@@ -163,9 +172,79 @@ wss.on('connection', (ws: WebSocket, req: any) => {
           return;
         }
 
+        // Store connection info for seamless decryption
         client.feedId = feedId;
-        client.subscriptionId = subscriptionId;
+        client.subscriptionId = resolvedSubscriptionId; // Use resolved subscription ID (from API key or direct)
         client.apiKeyId = apiKeyId;
+        client.consumerAddress = consumerAddress;
+        
+        // OPTION 1: Pre-authorized session keys - Auto-retrieve from database
+        // If API key has stored session key, use it automatically (no wallet needed!)
+        let finalSessionKey = sessionKey; // Use provided session key if available
+        
+        if (!finalSessionKey && apiKeyId) {
+          try {
+            const apiKeyService = (await import('./services/api-key.service')).default;
+            const storedSessionKey = await apiKeyService.getStoredSessionKey(apiKeyId);
+            
+            if (storedSessionKey) {
+              finalSessionKey = storedSessionKey;
+              console.log('[WebSocket] ✅ Retrieved pre-authorized session key from database (Option 1)', {
+                feedId,
+                subscriptionId: resolvedSubscriptionId,
+                apiKeyId: apiKeyId.slice(0, 8) + '...'
+              });
+            }
+          } catch (error: any) {
+            console.warn('[WebSocket] Failed to retrieve stored session key:', error.message);
+          }
+        }
+        
+        // Store session key for automatic backend decryption
+        // Session key allows backend to decrypt seamlessly without frontend doing it
+        if (finalSessionKey && consumerAddress && resolvedSubscriptionId) {
+          client.sessionKey = finalSessionKey;
+          
+          // OPTION 1: Automatically store session key if provided and not already stored
+          // This makes it seamless - user provides session key once, backend stores it
+          if (sessionKey && apiKeyId) {
+            // Check if we already have a stored session key
+            const apiKeyService = (await import('./services/api-key.service')).default;
+            const existingStored = await apiKeyService.getStoredSessionKey(apiKeyId);
+            
+            if (!existingStored) {
+              // No stored session key - store the provided one automatically
+              try {
+                const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+                await apiKeyService.storeSessionKey(apiKeyId, sessionKey, expiresAt);
+                console.log('[WebSocket] ✅ Auto-stored session key for future use (Option 1)', {
+                  apiKeyId: apiKeyId.slice(0, 8) + '...',
+                  expiresAt: expiresAt.toISOString(),
+                  note: 'Subscriber-viewer can now use this API key without wallet!'
+                });
+              } catch (storeError: any) {
+                console.warn('[WebSocket] Failed to auto-store session key:', storeError.message);
+                // Continue anyway - session key is still used for this connection
+              }
+            } else {
+              console.log('[WebSocket] ℹ️  Session key already stored, using stored version');
+            }
+          }
+          
+          console.log('[WebSocket] ✅ Session key ready for seamless automatic decryption', {
+            feedId,
+            subscriptionId: resolvedSubscriptionId,
+            source: sessionKey ? 'provided' : 'stored',
+            consumerAddress: consumerAddress.slice(0, 8) + '...'
+          });
+        } else if (!finalSessionKey && consumerAddress) {
+          console.log('[WebSocket] ⚠️  No session key available - backend will send encrypted data', {
+            feedId,
+            subscriptionId: resolvedSubscriptionId,
+            consumerAddress: consumerAddress.slice(0, 8) + '...',
+            note: 'Connect via React frontend with wallet to create and auto-store session key'
+          });
+        }
 
         ws.send(JSON.stringify({
           type: 'subscribed',
@@ -175,13 +254,36 @@ wss.on('connection', (ws: WebSocket, req: any) => {
         // Send initial data
         const feed = await suiService.getDataFeed(feedId);
         if (feed) {
-          const feedData = await walrusService.retrieveData(feed.walrusBlobId);
-          ws.send(JSON.stringify({
-            type: 'data',
-            feedId,
-            data: feedData,
-            timestamp: Date.now()
-          }));
+          if (feed.isPremium) {
+            // For premium feeds, send encrypted bytes as base64
+            const encryptedData = await walrusService.retrieveData(feed.walrusBlobId, undefined, feedId);
+            if (encryptedData instanceof Uint8Array) {
+              ws.send(JSON.stringify({
+                type: 'data',
+                feedId,
+                encrypted: true,
+                encryptionType: 'seal',
+                data: Buffer.from(encryptedData).toString('base64'),
+                timestamp: Date.now()
+              }));
+            } else {
+              ws.send(JSON.stringify({
+                type: 'data',
+                feedId,
+                data: encryptedData,
+                timestamp: Date.now()
+              }));
+            }
+          } else {
+            // For non-premium feeds, send plaintext data
+            const feedData = await walrusService.retrieveData(feed.walrusBlobId);
+            ws.send(JSON.stringify({
+              type: 'data',
+              feedId,
+              data: feedData,
+              timestamp: Date.now()
+            }));
+          }
         }
       } else if (data.type === 'unsubscribe') {
         client.feedId = undefined;
@@ -238,15 +340,127 @@ const heartbeatInterval = setInterval(() => {
 }, 30000); // 30 seconds
 
 // Broadcast data updates to subscribed clients
-export function broadcastDataUpdate(feedId: string, data: any) {
+export async function broadcastDataUpdate(feedId: string, data: any, isPremium: boolean = false) {
+  // If premium feed, we need to get encrypted bytes from Walrus
+  // The data passed here is plaintext enrichedData, but for premium feeds
+  // we need to broadcast the encrypted version
+  if (isPremium) {
+    try {
+      // Get the latest blob ID from the feed
+      const feed = await suiService.getDataFeed(feedId);
+      if (!feed) {
+        console.warn(`[broadcastDataUpdate] Premium feed ${feedId} not found, falling back to plaintext`);
+      } else if (!feed.walrusBlobId) {
+        console.warn(`[broadcastDataUpdate] Premium feed ${feedId} has no walrusBlobId, falling back to plaintext`);
+      } else {
+        const encryptedData = await walrusService.retrieveData(feed.walrusBlobId, undefined, feedId);
+        if (encryptedData instanceof Uint8Array) {
+          // Try to decrypt automatically for clients with session keys
+          const sealService = (await import('./services/seal.service')).default;
+          const base64Data = Buffer.from(encryptedData).toString('base64');
+          
+          // Decrypt for each connected client with session key
+          await Promise.all(
+            Array.from(clients).map(async (client: WSClient) => {
+              if (client.feedId === feedId && client.ws.readyState === WebSocket.OPEN) {
+                try {
+                  // SEAMLESS DECRYPTION: If client has session key, decrypt automatically
+                  if (client.sessionKey && client.subscriptionId && client.consumerAddress && sealService.isConfigured()) {
+                    try {
+                      console.log(`[broadcastDataUpdate] 🔓 Decrypting for client with session key`, {
+                        feedId,
+                        subscriptionId: client.subscriptionId?.slice(0, 8) + '...'
+                      });
+                      
+                      const decryptedData = await sealService.decryptData(
+                        base64Data,
+                        feedId,
+                        client.subscriptionId,
+                        client.sessionKey,
+                        client.consumerAddress
+                      );
+                      
+                      // Send decrypted plaintext data - SEAMLESS for subscriber!
+                      client.ws.send(JSON.stringify({
+                        type: 'data',
+                        feedId,
+                        data: decryptedData, // Plaintext - no decryption needed on frontend
+                        timestamp: Date.now()
+                      }));
+                      
+                      console.log(`[broadcastDataUpdate] ✅ Sent decrypted plaintext to client`);
+                      return;
+                    } catch (decryptError: any) {
+                      // Handle expired session key - clear it from client and database
+                      if (decryptError.message === 'SESSION_KEY_EXPIRED' || decryptError.message?.includes('expired')) {
+                        console.warn(`[broadcastDataUpdate] ⚠️  Session key expired, clearing from client and database`, {
+                          feedId,
+                          apiKeyId: client.apiKeyId?.slice(0, 8) + '...'
+                        });
+                        
+                        // Clear session key from client
+                        client.sessionKey = undefined;
+                        
+                        // Clear expired session key from database
+                        if (client.apiKeyId) {
+                          try {
+                            const apiKeyService = (await import('./services/api-key.service')).default;
+                            await apiKeyService.clearSessionKey(client.apiKeyId);
+                            console.log(`[broadcastDataUpdate] ✅ Cleared expired session key from database`);
+                          } catch (clearError: any) {
+                            console.warn(`[broadcastDataUpdate] Failed to clear expired session key:`, clearError.message);
+                          }
+                        }
+                      } else {
+                        console.warn(`[broadcastDataUpdate] ❌ Auto-decryption failed:`, decryptError.message);
+                      }
+                      // Fall through to send encrypted
+                    }
+                  }
+                  
+                  // No session key or decryption failed - send encrypted bytes
+                  // Frontend will need to decrypt manually
+                  client.ws.send(JSON.stringify({
+                    type: 'data',
+                    feedId,
+                    encrypted: true,
+                    encryptionType: 'seal',
+                    data: base64Data,
+                    timestamp: Date.now()
+                  }));
+                } catch (sendError: any) {
+                  console.warn(`[broadcastDataUpdate] Failed to send to client:`, sendError.message);
+                }
+              }
+            })
+          );
+          return;
+        } else {
+          // Data was retrieved but is not Seal-encrypted bytes (Uint8Array)
+          // This should not happen if data was uploaded with Seal encryption
+          console.error(`[broadcastDataUpdate] Premium feed ${feedId} data is not Seal-encrypted bytes (type: ${typeof encryptedData}). Expected Uint8Array. Data may need to be re-uploaded with Seal encryption.`);
+          // Fall through to plaintext broadcast as fallback
+        }
+      }
+    } catch (error: any) {
+      console.warn(`[broadcastDataUpdate] Failed to get encrypted data for premium feed ${feedId}:`, error.message);
+      // Fall through to plaintext broadcast as fallback (shouldn't happen in production)
+    }
+  }
+  
+  // For non-premium feeds or fallback, broadcast plaintext data
   clients.forEach((client) => {
     if (client.feedId === feedId && client.ws.readyState === WebSocket.OPEN) {
-      client.ws.send(JSON.stringify({
-        type: 'data',
-        feedId,
-        data,
-        timestamp: Date.now()
-      }));
+      try {
+        client.ws.send(JSON.stringify({
+          type: 'data',
+          feedId,
+          data,
+          timestamp: Date.now()
+        }));
+      } catch (sendError: any) {
+        console.warn(`[broadcastDataUpdate] Failed to send to client:`, sendError.message);
+      }
     }
   });
 }
