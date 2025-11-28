@@ -289,7 +289,7 @@ data-marketplace-/
 └── README.md              # This file
 ```
 
-## 🏆 Built for Sui Hackathon 2024
+## 🏆 Built for Walrus halout Hackathon 
 
 ### Key Innovations
 
