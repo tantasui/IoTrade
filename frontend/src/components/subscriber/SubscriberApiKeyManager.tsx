@@ -1,5 +1,5 @@
 /**
- * Subscriber API Key Manager Component
+ *  API Key Manager Component
  * For managing subscriber API keys (sk_xxx)
  */
 
