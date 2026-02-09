@@ -1,13 +1,15 @@
 import axios from 'axios';
 import { config } from './config.js';
 
-export async function uploadData(data: object): Promise<string> {
-  const jsonStr = JSON.stringify(data);
+export async function uploadData(data: object | Uint8Array): Promise<string> {
+  const isEncrypted = data instanceof Uint8Array;
+  const uploadBody = isEncrypted ? Buffer.from(data) : JSON.stringify(data);
+  const contentSize = isEncrypted ? data.length : (uploadBody as string).length;
   const uploadUrl = `${config.walrus.publisherUrl}/v1/blobs?epochs=${config.walrus.epochs}`;
 
-  console.log('[WalrusStore] Uploading', { url: uploadUrl, size: jsonStr.length });
+  console.log('[WalrusStore] Uploading', { url: uploadUrl, size: contentSize, encrypted: isEncrypted });
 
-  const response = await axios.put(uploadUrl, jsonStr, {
+  const response = await axios.put(uploadUrl, uploadBody, {
     headers: { 'Content-Type': 'application/octet-stream' },
   });
 

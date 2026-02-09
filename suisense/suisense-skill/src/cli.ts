@@ -109,7 +109,8 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async ['register-feed']() {
-    console.log('Registering new DataFeed on-chain...');
+    const isPremium = process.argv.includes('--premium');
+    console.log(`Registering new DataFeed on-chain (premium: ${isPremium})...`);
 
     // Upload initial placeholder data to Walrus
     const initialData = {
@@ -127,7 +128,7 @@ const commands: Record<string, () => Promise<void>> = {
         location: 'Local',
         pricePerQuery: 1000000,       // 0.001 SUI
         monthlySubscriptionPrice: 50000000, // 0.05 SUI
-        isPremium: false,
+        isPremium,
         updateFrequency: 60,          // 60 seconds
       },
       blobId
@@ -135,6 +136,9 @@ const commands: Record<string, () => Promise<void>> = {
 
     console.log(`Feed registered! Feed ID: ${feedId}`);
     console.log(`Add this to your .env: DATA_FEED_ID=${feedId}`);
+    if (isPremium) {
+      console.log('This is a PREMIUM feed. Set SEAL_ENCRYPT=true in .env to encrypt sensor data.');
+    }
   },
 };
 
@@ -151,7 +155,7 @@ async function main() {
     console.log('  health         Check if server is running and ESP32 is sending');
     console.log('  feed-info      Show DataFeed on-chain details');
     console.log('  balance        Show SUI wallet balance');
-    console.log('  register-feed  Register a new DataFeed on-chain');
+    console.log('  register-feed [--premium]  Register a new DataFeed on-chain');
     process.exit(1);
   }
 

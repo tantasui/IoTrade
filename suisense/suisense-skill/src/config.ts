@@ -23,5 +23,11 @@ export const config = {
   sensor: {
     port: parseInt(process.env.SENSOR_PORT || '3001'),
   },
+  seal: {
+    encrypt: process.env.SEAL_ENCRYPT === 'true',
+    keyServerObjectIds: process.env.SEAL_KEY_SERVER_OBJECT_IDS
+      ? process.env.SEAL_KEY_SERVER_OBJECT_IDS.split(',')
+      : [],
+  },
   dataFeedId: process.env.DATA_FEED_ID || '',
 };

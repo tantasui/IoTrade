@@ -136,14 +136,17 @@ metadata:
     │   Step 1: Validate payload (data field required) │
     │   Step 2: Enrich with metadata:                 │
     │           { receivedAt, source: "iot_device" }  │
-    │   Step 3: Upload JSON to Walrus                 │
+    │   Step 3: If SEAL_ENCRYPT=true:                  │
+    │           Encrypt with Seal IBE (feedId=identity)│
+    │           → encrypted Uint8Array                │
+    │   Step 4: Upload to Walrus (encrypted or plain) │
     │           PUT {publisherUrl}/v1/blobs?epochs=1  │
     │           → returns blobId                      │
-    │   Step 4: Update on-chain DataFeed              │
+    │   Step 5: Update on-chain DataFeed              │
     │           call update_feed_data(feedId, blobId) │
     │           → DataFeed.walrus_blob_id = new blob  │
-    │   Step 5: Store reading in memory (last 100)    │
-    │   Step 6: Return { success, blobId, feedId }    │
+    │   Step 6: Store reading in memory (last 100)    │
+    │   Step 7: Return { success, blobId, encrypted } │
     │                                                 │
     └──────────┬──────────────────┬───────────────────┘
                │                  │
@@ -191,6 +194,10 @@ metadata:
                │          │    Get DataFeed object      │
                │          │    → extract walrus_blob_id │
                └──────────│    → GET blob from Walrus   │
+                          │    → if Seal-encrypted:     │
+                          │      build seal_approve tx  │
+                          │      fetch Seal keys        │
+                          │      decrypt → JSON data    │
                           │    → display sensor data    │
                           │                            │
                           └────────────────────────────┘
@@ -230,7 +237,8 @@ The contracts live in `/home/tanta/IoTrade/iot_marketplace/sources/` and are dep
 - **`submit_rating(feed_id, stars, comment)`** — Creates a `Rating` object (1-5 stars).
 
 ### `seal_access` module
-- Access control for Seal-encrypted premium feeds (not used by SuiSense — feeds are non-premium).
+- **`seal_approve(id: vector<u8>, feed: &DataFeed, subscription: &Subscription)`** — Entry function called by Seal key servers before providing decryption keys. Verifies: feed is active, feed is premium, subscription belongs to sender, subscription is active and not expired, subscription is for this specific feed.
+- Used by SuiSense buyer agent when decrypting premium feed data via `@mysten/seal`.
 
 ---
 
@@ -251,15 +259,16 @@ suisense/
 │   │                              # + markdown body (commands, setup, endpoints, flow)
 │   │                              # Every command uses {baseDir} which OpenClaw resolves
 │   │
-│   ├── package.json               # type: "module", deps: @mysten/sui, express, axios, dotenv
+│   ├── package.json               # type: "module", deps: @mysten/seal, @mysten/sui, express, axios, dotenv
 │   ├── tsconfig.json              # ES2022, ESNext modules, bundler resolution
 │   │
 │   └── src/
 │       ├── config.ts              # Loads ../.env via dotenv
-│       │                          # Exports config object with sui/walrus/sensor sections
+│       │                          # Exports config object with sui/walrus/sensor/seal sections
 │       │                          # Non-throwing — server starts even without all vars
 │       │
 │       ├── walrus-store.ts        # uploadData(data) → PUT to Walrus → parse blobId
+│       │                          #   Accepts object (JSON) or Uint8Array (encrypted bytes)
 │       │                          #   Handles 6 different Walrus response shapes
 │       │                          # retrieveData(blobId) → GET from Walrus → parse JSON
 │       │
@@ -272,9 +281,15 @@ suisense/
 │       │                          # getAllDataFeeds() — query FeedRegistered events
 │       │                          # subscribe(feedId, tier, amount) — subscribe + pay
 │       │
+│       ├── seal-service.ts        # Seal IBE encryption for premium feeds
+│       │                          # isConfigured() — checks packageId is set
+│       │                          # shouldEncrypt() — checks SEAL_ENCRYPT env var
+│       │                          # encryptData(data, feedId) → encrypted Uint8Array
+│       │                          # Uses @mysten/seal SealClient with testnet key servers
+│       │
 │       ├── sensor-server.ts       # Express server on SENSOR_PORT (default 3001)
 │       │                          # POST /api/sensor/update — main endpoint for ESP32
-│       │                          #   validate → enrich → Walrus upload → Sui update
+│       │                          #   validate → enrich → [encrypt if SEAL_ENCRYPT=true] → Walrus upload → Sui update
 │       │                          # GET /api/sensor/latest — most recent reading
 │       │                          # GET /api/sensor/readings — last 50 readings
 │       │                          # GET /api/sensor/stats — totals, uptime, feed ID
@@ -293,15 +308,23 @@ suisense/
 │   ├── SKILL.md                   # Buyer skill — injected into a second OpenClaw agent
 │   │                              # Commands: discover, subscribe, read, balance
 │   │
-│   ├── package.json               # Lighter deps: @mysten/sui, axios, dotenv (no express)
+│   ├── package.json               # Lighter deps: @mysten/seal, @mysten/sui, axios, dotenv (no express)
 │   ├── tsconfig.json
 │   │
 │   └── src/
-│       └── data-buyer.ts          # Standalone CLI — uses BUYER_PRIVATE_KEY (separate wallet)
-│                                  # discover — queryEvents for FeedRegistered, fetch each
-│                                  # subscribe — splitCoins + subscribe_to_feed Move call
-│                                  # read — getObject → walrus_blob_id → GET from Walrus
-│                                  # balance — getBalance for buyer address
+│       ├── data-buyer.ts          # Standalone CLI — uses BUYER_PRIVATE_KEY (separate wallet)
+│       │                          # discover — queryEvents for FeedRegistered, fetch each
+│       │                          # subscribe — splitCoins + subscribe_to_feed Move call
+│       │                          # read — getObject → walrus_blob_id → GET from Walrus
+│       │                          #   Auto-detects Seal encryption → decrypts with subscription
+│       │                          # balance — getBalance for buyer address
+│       │
+│       └── seal-service.ts        # Seal IBE decryption for premium feeds
+│                                  # isEncryptedData(bytes) — detects Seal-encrypted data
+│                                  # decryptFeedData(bytes, feedId, subscriptionId) — full decrypt
+│                                  #   Creates SessionKey signed by BUYER_PRIVATE_KEY
+│                                  #   Builds seal_approve transaction for on-chain verification
+│                                  #   Fetches keys from Seal key servers → decrypts
 │
 └── esp32/
     └── suisense_dht11.ino         # Arduino firmware for ESP32 + DHT11
@@ -321,9 +344,11 @@ Every TypeScript module was adapted from the existing **IoTrade** codebase at `/
 | SuiSense File | IoTrade Source | What Changed |
 |---------------|---------------|-------------|
 | `config.ts` | New | Loads `.env` from parent dir. Non-throwing — allows server to start without blockchain keys |
-| `walrus-store.ts` | `services/walrus.service.ts` (lines 33-140) | Removed Seal encryption, removed class wrapper, kept the multi-shape blob ID parser (6 different Walrus response formats), pure functions |
-| `sui-bridge.ts` | `services/sui.service.ts` (580 lines) | Extracted to standalone functions (not a class). Lazy keypair initialization (deferred until first use). Kept all Move call patterns: `update_feed_data`, `register_data_feed`, `subscribe_to_feed`, `queryEvents`. Kept retry logic removed for simplicity |
-| `sensor-server.ts` | `routes/iot.ts` + `index.ts` | Removed: Prisma database, API key authentication, WebSocket broadcasting, Seal encryption. Added: in-memory readings array (last 100), enrichment metadata, graceful handling of missing Sui keys |
+| `walrus-store.ts` | `services/walrus.service.ts` (lines 33-140) | Removed class wrapper, kept the multi-shape blob ID parser (6 different Walrus response formats). Now accepts `object | Uint8Array` — supports both plaintext JSON and Seal-encrypted bytes |
+| `seal-service.ts` (seller) | `services/seal.service.ts` (lines 56-91) | Adapted encryption-only logic to functional style. Lazy SealClient init. Uses same testnet key server IDs. `encryptData()` converts data → bytes → Seal IBE encrypt |
+| `seal-service.ts` (buyer) | `services/seal.service.ts` (lines 134-220) + `hooks/useSeal.ts` | Adapted decryption for CLI context — creates SessionKey programmatically using `Ed25519Keypair.signPersonalMessage()` instead of browser wallet. Builds `seal_approve` transaction, fetches keys from Seal servers, decrypts |
+| `sui-bridge.ts` | `services/sui.service.ts` (580 lines) | Extracted to standalone functions (not a class). Lazy keypair initialization (deferred until first use). Kept all Move call patterns: `update_feed_data`, `register_data_feed`, `subscribe_to_feed`, `queryEvents` |
+| `sensor-server.ts` | `routes/iot.ts` + `index.ts` | Removed: Prisma database, API key authentication, WebSocket broadcasting. Added: in-memory readings array (last 100), enrichment metadata, graceful handling of missing Sui keys, conditional Seal encryption when SEAL_ENCRYPT=true |
 | `cli.ts` | New | CLI wrapper that queries local server (via axios HTTP) or Sui (via sui-bridge) depending on command |
 | `data-buyer.ts` | `services/sui.service.ts` | Standalone buyer with own keypair from `BUYER_PRIVATE_KEY`. Discover via `queryEvents`, subscribe via `splitCoins` + `subscribe_to_feed`, read via `getObject` + Walrus fetch |
 | `suisense_dht11.ino` | `example/provider-iot-device.ino` | Changed from mock data to real DHT11 sensor. Added DHT library, sensor validation, heat index calculation. Removed API key header. Changed to 60s interval. Added LED blink patterns |
@@ -353,8 +378,13 @@ WALRUS_EPOCHS=1
 # === Server ===
 SENSOR_PORT=3001
 
+# === Seal Encryption (Premium Feeds) ===
+SEAL_ENCRYPT=false                 # Set to 'true' to encrypt sensor data with Seal IBE
+# SEAL_KEY_SERVER_OBJECT_IDS=...   # Optional — defaults to testnet key servers
+
 # === Buyer Agent ===
 BUYER_PRIVATE_KEY=suiprivkey1...  # Separate buyer wallet
+# SUBSCRIPTION_ID=0x...           # Set after subscribing to a premium feed
 ```
 
 **Key points:**
@@ -362,6 +392,8 @@ BUYER_PRIVATE_KEY=suiprivkey1...  # Separate buyer wallet
 - `DATA_FEED_ID` is set after running `register-feed` CLI command
 - `BUYER_PRIVATE_KEY` MUST be a different wallet than the seller
 - `WALRUS_EPOCHS=1` means blobs are stored for 1 epoch (sufficient for demo)
+- `SEAL_ENCRYPT=true` enables Seal encryption — only use with premium feeds (`register-feed --premium`)
+- `SUBSCRIPTION_ID` is optional — can also be passed as CLI argument to `read`
 
 ---
 
@@ -388,11 +420,14 @@ cp .env.example .env
 ### Step 3: Register a DataFeed on-chain (one-time)
 ```bash
 cd suisense-skill
-npx tsx src/cli.ts register-feed
+npx tsx src/cli.ts register-feed              # Standard feed (plaintext data)
+npx tsx src/cli.ts register-feed --premium    # Premium feed (Seal-encrypted data)
 ```
 This does two things:
 1. Uploads a placeholder JSON blob to Walrus
 2. Calls `register_data_feed` on Sui — creates a shared DataFeed object
+
+For premium feeds, also set `SEAL_ENCRYPT=true` in your `.env`.
 
 Output:
 ```
@@ -479,10 +514,33 @@ npx tsx src/data-buyer.ts read 0x4871a398372229edb5f18776cbb0dc333f9368d6f615a36
 
 ### What just happened:
 1. ESP32 data was POSTed to the local sensor server
-2. Server uploaded the JSON to Walrus (decentralized storage) → got blob ID
-3. Server called `update_feed_data` on Sui → stored blob ID on-chain
-4. Buyer agent queried the on-chain DataFeed → got the blob ID → fetched data from Walrus
-5. Buyer sees real temperature/humidity data that came from a physical sensor
+2. If `SEAL_ENCRYPT=true`: server encrypted the data with Seal IBE before upload
+3. Server uploaded to Walrus (encrypted bytes or plaintext JSON) → got blob ID
+4. Server called `update_feed_data` on Sui → stored blob ID on-chain
+5. Buyer agent queried the on-chain DataFeed → got the blob ID → fetched data from Walrus
+6. If encrypted: buyer auto-detected Seal encryption → decrypted with subscription access
+7. Buyer sees real temperature/humidity data that came from a physical sensor
+
+### Premium Feed Demo (Encrypted)
+```bash
+# Terminal 1: Register premium feed and start server
+cd suisense/suisense-skill
+npx tsx src/cli.ts register-feed --premium
+# Set DATA_FEED_ID and SEAL_ENCRYPT=true in .env
+npx tsx src/sensor-server.ts
+
+# Terminal 2: Send encrypted data
+curl -X POST http://localhost:3001/api/sensor/update \
+  -H "Content-Type: application/json" \
+  -d '{"deviceId":"esp32-dht11-001","data":{"temperature":28.5,"humidity":65.2}}'
+# Response: {"success":true,"blobId":"...","encrypted":true,...}
+
+# Terminal 3: Buyer subscribes and reads
+cd suisense/buyer-agent
+npx tsx src/data-buyer.ts subscribe <feedId> 1 50000000
+npx tsx src/data-buyer.ts read <feedId> <subscriptionId>
+# Output: Decrypted Data: {"temperature":28.5,"humidity":65.2,...}
+```
 
 ---
 
@@ -600,6 +658,7 @@ Receives sensor data from ESP32 and processes it through the full pipeline.
   "success": true,
   "blobId": "8sjmUCvfqdtaw0E4oWROAf_TPVBsxVh-WkwAMOKz3OQ",
   "feedId": "0x4871a398372229edb5f18776cbb0dc333f9368d6f615a36e17c489f6842c850c",
+  "encrypted": false,
   "timestamp": 1770544831693
 }
 ```
@@ -607,10 +666,11 @@ Receives sensor data from ESP32 and processes it through the full pipeline.
 **What happens internally:**
 1. Validates `data` field exists
 2. Enriches with `{ receivedAt, source: "iot_device", deviceId }`
-3. `uploadData(enrichedData)` → PUT to Walrus → parse blobId from response
-4. `updateFeedData(feedId, blobId)` → Sui transaction → updates DataFeed object
-5. Stores in memory array (unshift, cap at 100)
-6. Returns blobId and feedId
+3. If `SEAL_ENCRYPT=true`: encrypts data with Seal IBE using feed ID as identity
+4. `uploadData(data)` → PUT to Walrus (encrypted bytes or plaintext JSON) → parse blobId
+5. `updateFeedData(feedId, blobId)` → Sui transaction → updates DataFeed object
+6. Stores in memory array (unshift, cap at 100)
+7. Returns blobId, feedId, and `encrypted` flag
 
 ### GET `/api/sensor/latest`
 
@@ -674,6 +734,7 @@ Run from `suisense-skill/` directory:
 | `npx tsx src/cli.ts feed-info` | Shows full DataFeed on-chain details | No |
 | `npx tsx src/cli.ts balance` | Shows SUI wallet balance | No |
 | `npx tsx src/cli.ts register-feed` | Creates new DataFeed on Sui (one-time) | No |
+| `npx tsx src/cli.ts register-feed --premium` | Creates premium DataFeed with Seal encryption | No |
 
 ### Buyer CLI (`buyer-agent/src/data-buyer.ts`)
 
@@ -683,7 +744,7 @@ Run from `buyer-agent/` directory:
 |---------|-------------|
 | `npx tsx src/data-buyer.ts discover` | Lists all feeds from FeedRegistered events |
 | `npx tsx src/data-buyer.ts subscribe <feedId> <tier> <amountMIST>` | Subscribes + pays SUI |
-| `npx tsx src/data-buyer.ts read <feedId>` | Reads data from Walrus via on-chain blobId |
+| `npx tsx src/data-buyer.ts read <feedId> [subscriptionId]` | Reads data from Walrus (auto-decrypts premium feeds) |
 | `npx tsx src/data-buyer.ts balance` | Shows buyer wallet balance |
 
 **Tier values:** 0 = pay-per-query, 1 = monthly, 2 = premium
@@ -722,6 +783,7 @@ All tests performed on **February 8, 2026** against Sui testnet:
 
 | Package | Version | Purpose |
 |---------|---------|---------|
+| `@mysten/seal` | ^0.9.3 | Seal IBE encryption/decryption for premium feed data |
 | `@mysten/sui` | ^1.44.0 | Sui TypeScript SDK — Transaction building, Ed25519Keypair, SuiClient |
 | `express` | ^4.18.2 | HTTP server for receiving ESP32 sensor data |
 | `axios` | ^1.6.2 | HTTP client for Walrus blob upload/retrieval |
@@ -733,7 +795,7 @@ All tests performed on **February 8, 2026** against Sui testnet:
 
 ### buyer-agent
 
-Same as above minus `express` and `@types/express` (buyer doesn't run a server).
+Same as above minus `express` and `@types/express` (buyer doesn't run a server). Includes `@mysten/seal` for Seal decryption.
 
 ---
 
@@ -753,3 +815,7 @@ Same as above minus `express` and `@types/express` (buyer doesn't run a server).
 | ESP32 shows "OUT OF RANGE" values | Wrong sensor type or damaged sensor | Verify DHT11 (not DHT22), check 3.3V power |
 | ESP32 HTTP error -5 (connection lost) | Server timeout or network issue | Check server is running, move ESP32 closer to WiFi |
 | ESP32 HTTP 308 redirect | Wrong server URL | Update `serverHost` to correct IP |
+| Seal encryption fails: "Seal encryption failed" | Seal key servers unreachable or package ID wrong | Verify `SUI_PACKAGE_ID` in `.env`, check network connectivity to testnet |
+| Buyer sees "Data is Seal-encrypted (premium feed)" but can't decrypt | No subscription ID provided | Pass subscription ID: `read <feedId> <subscriptionId>` or set `SUBSCRIPTION_ID` in `.env` |
+| Buyer decryption fails: "No access to decryption keys" | Subscription expired, wrong feed, or not owned by buyer | Verify subscription is active, for the correct feed, and owned by `BUYER_PRIVATE_KEY` |
+| Premium feed shows `encrypted: true` but buyer reads plaintext | Feed registered without `--premium` flag | Re-register with `register-feed --premium` — the on-chain `is_premium` field must be `true` for Seal access control |

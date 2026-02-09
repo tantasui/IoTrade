@@ -9,6 +9,7 @@
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
+    "@mysten/seal": "^0.9.3",
     "@mysten/sui": "^1.44.0",
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",

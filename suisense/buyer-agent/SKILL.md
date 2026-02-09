@@ -37,10 +37,11 @@ npx tsx {baseDir}/src/data-buyer.ts subscribe 0xabc123... 1 50000000
 ```
 
 ### Read Feed Data
-Fetches the latest data from a feed's Walrus blob.
+Fetches the latest data from a feed's Walrus blob. For premium (Seal-encrypted) feeds, provide your subscription ID to decrypt.
 ```bash
-npx tsx {baseDir}/src/data-buyer.ts read <feedId>
+npx tsx {baseDir}/src/data-buyer.ts read <feedId> [subscriptionId]
 ```
+If the feed is encrypted, the buyer agent automatically detects it and decrypts using your subscription. You can also set `SUBSCRIPTION_ID` in `.env` instead of passing it as an argument.
 
 ### Check Balance
 ```bash
@@ -53,6 +54,7 @@ npx tsx {baseDir}/src/data-buyer.ts balance
 2. The buyer wallet must be a **different** key from the seller
 3. Fund the buyer wallet with testnet SUI: `sui client faucet`
 4. Install dependencies: `cd {baseDir} && npm install`
+5. After subscribing to a premium feed, set `SUBSCRIPTION_ID=<id>` in `.env` (or pass it as CLI arg)
 
 ## Example Workflow
 
