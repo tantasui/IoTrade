@@ -63,8 +63,10 @@ cd ../buyer-agent && npm install
 ### 3. Register a Data Feed (One-Time)
 ```bash
 cd suisense-skill
-npx tsx src/cli.ts register-feed
+npx tsx src/cli.ts register-feed              # Standard feed (plaintext)
+npx tsx src/cli.ts register-feed --premium    # Premium feed (Seal-encrypted)
 # Copy the returned feed ID to .env as DATA_FEED_ID
+# For premium feeds, also set SEAL_ENCRYPT=true
 ```
 
 ### 4. Start Sensor Server
@@ -96,12 +98,45 @@ cp -r suisense-skill ~/.openclaw/skills/suisense
 cp -r buyer-agent ~/.openclaw/skills/suisense-buyer
 ```
 
+## Seal Encryption (Premium Feeds)
+
+SuiSense supports **Seal IBE encryption** for premium data feeds using `@mysten/seal`. When enabled:
+
+1. **Seller** encrypts sensor data with Seal before uploading to Walrus — plaintext never reaches storage
+2. **Buyer** must have a valid on-chain Subscription to decrypt the data
+3. Access control is enforced by the `seal_access::seal_approve` Move function on-chain
+
+### Enable Encryption (Seller)
+```bash
+# Register a premium feed
+cd suisense-skill
+npx tsx src/cli.ts register-feed --premium
+
+# Set in suisense/.env
+SEAL_ENCRYPT=true
+DATA_FEED_ID=<returned_feed_id>
+```
+
+### Decrypt Data (Buyer)
+```bash
+cd buyer-agent
+
+# Subscribe first
+npx tsx src/data-buyer.ts subscribe <feedId> 1 50000000
+
+# Read with subscription ID (auto-detects encryption)
+npx tsx src/data-buyer.ts read <feedId> <subscriptionId>
+```
+
+The buyer agent automatically detects whether data is Seal-encrypted. For non-premium feeds, it reads plaintext as before.
+
 ## Sui Stack Components
 
 | Component | Usage |
 |-----------|-------|
-| **Sui Move** | DataFeed objects, subscription contracts, data marketplace |
-| **Walrus** | Decentralized storage for sensor data blobs |
+| **Sui Move** | DataFeed objects, subscription contracts, data marketplace, Seal access control |
+| **Walrus** | Decentralized storage for sensor data blobs (encrypted or plaintext) |
+| **Seal** | Identity-Based Encryption for premium feed data via `@mysten/seal` |
 | **Sui Client SDK** | `@mysten/sui` for transaction building and querying |
 
 **Package ID (testnet):** `0xea35b8166a92fafa4ffabe287f432487c55be85c125427f9a36d593982508ac9`
@@ -115,7 +150,8 @@ suisense/
 │   ├── src/
 │   │   ├── sensor-server.ts  # Express server for ESP32 data
 │   │   ├── sui-bridge.ts     # Sui blockchain interactions
-│   │   ├── walrus-store.ts   # Walrus storage
+│   │   ├── walrus-store.ts   # Walrus storage (supports encrypted uploads)
+│   │   ├── seal-service.ts   # Seal IBE encryption for premium feeds
 │   │   ├── config.ts         # Environment config
 │   │   └── cli.ts            # CLI commands for the agent
 │   ├── package.json
@@ -123,7 +159,8 @@ suisense/
 ├── buyer-agent/              # OpenClaw buyer agent skill
 │   ├── SKILL.md              # Buyer skill definition
 │   ├── src/
-│   │   └── data-buyer.ts     # CLI for discovering/buying data
+│   │   ├── data-buyer.ts     # CLI for discovering/buying data
+│   │   └── seal-service.ts   # Seal IBE decryption for premium feeds
 │   ├── package.json
 │   └── tsconfig.json
 ├── esp32/

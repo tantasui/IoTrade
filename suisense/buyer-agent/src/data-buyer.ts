@@ -7,6 +7,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { fromHEX } from '@mysten/sui/utils';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import axios from 'axios';
+import { decryptFeedData, isEncryptedData } from './seal-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -16,6 +17,7 @@ const NETWORK = (process.env.SUI_NETWORK || 'testnet') as 'testnet' | 'mainnet' 
 const REGISTRY_ID = process.env.SUI_REGISTRY_ID || '';
 const TREASURY_ID = process.env.SUI_TREASURY_ID || '';
 const WALRUS_AGG = process.env.WALRUS_AGGREGATOR_URL || 'https://aggregator.walrus-testnet.walrus.space';
+const SUBSCRIPTION_ID = process.env.SUBSCRIPTION_ID || '';
 
 const client = new SuiClient({ url: getFullnodeUrl(NETWORK) });
 
@@ -117,7 +119,7 @@ async function subscribeFeed(feedId: string, tier: string, amount: string) {
   }
 }
 
-async function readFeed(feedId: string) {
+async function readFeed(feedId: string, subscriptionArg?: string) {
   console.log(`Reading data from feed ${feedId}...\n`);
 
   const obj = await client.getObject({ id: feedId, options: { showContent: true } });
@@ -130,6 +132,7 @@ async function readFeed(feedId: string) {
   const blobId = fields.walrus_blob_id;
 
   console.log(`Feed: ${fields.name}`);
+  console.log(`Premium: ${fields.is_premium}`);
   console.log(`Walrus blob: ${blobId}`);
   console.log(`Last updated: ${new Date(parseInt(fields.last_updated)).toISOString()}`);
   console.log('');
@@ -141,15 +144,46 @@ async function readFeed(feedId: string) {
 
   try {
     const url = `${WALRUS_AGG}/v1/blobs/${blobId}`;
-    const res = await axios.get(url, { responseType: 'text' });
-    let data: any;
-    try {
-      data = JSON.parse(res.data);
-    } catch {
-      data = res.data;
+    // Fetch as arraybuffer to handle both plaintext and encrypted data
+    const res = await axios.get(url, { responseType: 'arraybuffer' });
+    const rawBytes = new Uint8Array(res.data);
+
+    if (isEncryptedData(rawBytes)) {
+      console.log('Data is Seal-encrypted (premium feed).\n');
+
+      const subId = subscriptionArg || SUBSCRIPTION_ID;
+      if (!subId) {
+        console.error(
+          'This is a premium feed with encrypted data.\n' +
+          'To decrypt, provide your subscription ID:\n' +
+          '  data-buyer.ts read <feedId> <subscriptionId>\n' +
+          'Or set SUBSCRIPTION_ID in .env'
+        );
+        return;
+      }
+
+      try {
+        const data = await decryptFeedData(rawBytes, feedId, subId);
+        console.log('Decrypted Data:');
+        console.log(JSON.stringify(data, null, 2));
+      } catch (err: any) {
+        console.error(`Decryption failed: ${err.message}`);
+        if (err.message.includes('No access')) {
+          console.error('Your subscription may be expired or for a different feed.');
+        }
+      }
+    } else {
+      // Plaintext data
+      let data: any;
+      try {
+        const text = new TextDecoder().decode(rawBytes);
+        data = JSON.parse(text);
+      } catch {
+        data = new TextDecoder().decode(rawBytes);
+      }
+      console.log('Data:');
+      console.log(JSON.stringify(data, null, 2));
     }
-    console.log('Data:');
-    console.log(JSON.stringify(data, null, 2));
   } catch (err: any) {
     console.error(`Failed to fetch from Walrus: ${err.message}`);
   }
@@ -182,10 +216,10 @@ async function main() {
       break;
     case 'read':
       if (args.length < 1) {
-        console.error('Usage: data-buyer.ts read <feedId>');
+        console.error('Usage: data-buyer.ts read <feedId> [subscriptionId]');
         process.exit(1);
       }
-      await readFeed(args[0]);
+      await readFeed(args[0], args[1]);
       break;
     case 'balance':
       await showBalance();
@@ -196,7 +230,7 @@ async function main() {
       console.log('Commands:');
       console.log('  discover                             List available data feeds');
       console.log('  subscribe <feedId> <tier> <amount>   Subscribe to a feed');
-      console.log('  read <feedId>                        Read latest data from a feed');
+      console.log('  read <feedId> [subscriptionId]       Read latest data (decrypts premium feeds)');
       console.log('  balance                              Show buyer wallet balance');
       process.exit(1);
   }

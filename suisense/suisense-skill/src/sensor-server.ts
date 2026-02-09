@@ -2,6 +2,7 @@ import express from 'express';
 import { config } from './config.js';
 import { uploadData } from './walrus-store.js';
 import { updateFeedData, getAddress } from './sui-bridge.js';
+import { isConfigured as isSealConfigured, shouldEncrypt, encryptData } from './seal-service.js';
 
 interface SensorReading {
   deviceId: string;
@@ -38,9 +39,25 @@ app.post('/api/sensor/update', async (req, res) => {
       source: 'iot_device',
     };
 
+    // Encrypt if Seal is enabled
+    let dataToUpload: object | Uint8Array = enrichedData;
+    let encrypted = false;
+
+    if (shouldEncrypt() && config.dataFeedId) {
+      if (!isSealConfigured()) {
+        console.warn(`[${requestId}] SEAL_ENCRYPT=true but Seal not configured. Uploading plaintext.`);
+      } else {
+        console.log(`[${requestId}] Encrypting with Seal...`);
+        const { encryptedBytes } = await encryptData(enrichedData, config.dataFeedId);
+        dataToUpload = encryptedBytes;
+        encrypted = true;
+        console.log(`[${requestId}] Encrypted: ${encryptedBytes.length} bytes`);
+      }
+    }
+
     // Upload to Walrus
     console.log(`[${requestId}] Uploading to Walrus...`);
-    const blobId = await uploadData(enrichedData);
+    const blobId = await uploadData(dataToUpload);
     console.log(`[${requestId}] Walrus blob: ${blobId}`);
 
     // Store in memory
@@ -68,6 +85,7 @@ app.post('/api/sensor/update', async (req, res) => {
       success: true,
       blobId,
       feedId: feedId || null,
+      encrypted,
       timestamp: Date.now(),
     });
   } catch (error: any) {
@@ -123,6 +141,7 @@ app.listen(config.sensor.port, () => {
   console.log(`[SuiSense] Sensor server running on port ${config.sensor.port}`);
   console.log(`[SuiSense] Address: ${address}`);
   console.log(`[SuiSense] Feed ID: ${config.dataFeedId || '(not set)'}`);
+  console.log(`[SuiSense] Seal encryption: ${shouldEncrypt() ? 'ENABLED' : 'disabled'}`);
   console.log(`[SuiSense] Endpoints:`);
   console.log(`  POST /api/sensor/update   — receive ESP32 data`);
   console.log(`  GET  /api/sensor/latest   — latest reading`);
